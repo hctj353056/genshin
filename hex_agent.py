@@ -112,8 +112,9 @@ class OnlineLearner:
         # 成功率高 → 扰动小（稳定）；成功率低 → 扰动大（探索）
         noise_scale = self.lr * (1.0 - success_rate + 0.1)
         
+        # 生成与选中参数相同形状的噪声并更新
         noise = np.random.randn(*param.shape).astype(np.float32) * noise_scale
-        self.model.classifier += noise
+        param += noise
         
     def get_stats(self) -> dict:
         total = self.success_count + self.fail_count
