@@ -10,7 +10,7 @@ from enum import Enum
 
 # 导入各模块
 from hex_mha_module_v2 import HexMHA
-from hex_keyboard import HexKeyboard, InputMode
+from hex_keyboard import HexKeyboard, KeyAction
 from 词元模块_1778459060672_3xq9 import str_to_hex, hex_to_str
 from 解析模块_1778459060679_lsxn import file_to_hex, hex_to_file
 

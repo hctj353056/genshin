@@ -1,275 +1,549 @@
 # hex_keyboard.py
-# 16进制键盘输入模块
-# 为HexMHA等模块提供统一的输入接口
+# 16进制键盘模块 - 人类键盘 + X/Y架构
+#
+# 设计参考：人类键盘 + 命令行设计
+# X: 操作模式（功能键）| Y: 数据负载
+#
+# 示例：
+#   X=PRINT, Y=hex -> 屏幕打印hex转字符串
+#   X=FILE, Y=hex -> 写入文件
+#   X=LOG, Y=hex -> 记录日志
 
+import os
 import re
 from typing import Optional, Callable
 from enum import Enum
+from datetime import datetime
+
+# 导入词元模块
+try:
+    from 词元模块_1778459060672_3xq9 import hex_to_str
+except ImportError:
+    # 备用：如果词元模块不存在
+    def hex_to_str(hex_str):
+        try:
+            return bytes.fromhex(hex_str).decode('utf-8')
+        except:
+            return hex_str
 
 HEX_CHARS = '0123456789ABCDEF'
 
 
-class InputMode(Enum):
-    """输入模式"""
-    STREAMING = 'streaming'  # 流式输入
-    CACHE = 'cache'          # 缓存输入
-    BATCH = 'batch'          # 批量输入
+class KeyAction(Enum):
+    """
+    键盘动作（X轴 - 操作模式）
+    
+    类似人类键盘的功能键区，每个动作定义一个操作类型
+    """
+    # 输出类
+    PRINT = "PRINT"      # 屏幕打印（Y=hex → 转为字符串打印）
+    ECHO = "ECHO"       # 回显（Y=hex → 直接打印hex）
+    ALERT = "ALERT"      # 警告（Y=hex → 警告消息）
+    
+    # 存储类
+    SAVE = "SAVE"        # 保存文件（Y=hex → 写入文件）
+    APPEND = "APPEND"   # 追加文件（Y=hex → 追加写入）
+    LOAD = "LOAD"        # 读取文件（Y=hex路径 → 加载内容）
+    
+    # 日志类
+    LOG = "LOG"         # 记录日志（Y=hex → 写入日志）
+    LOG_DEBUG = "DEBUG"  # 调试日志
+    LOG_ERROR = "ERROR"  # 错误日志
+    
+    # 状态类
+    STATS = "STATS"     # 显示统计（Y被忽略）
+    STATUS = "STATUS"    # 显示状态
+    RESET = "RESET"      # 重置状态
+    
+    # 控制类
+    LEARN_ON = "LEARN_ON"   # 开启学习
+    LEARN_OFF = "LEARN_OFF"  # 关闭学习
+    SAVE_STATE = "SAVE_STATE" # 保存状态
+    QUIT = "QUIT"       # 退出
+    
+    # 空操作
+    NOP = "NOP"         # 无操作
 
 
 class HexKeyboard:
-    def __init__(self, max_length: int = 256, auto_pad: bool = False,
-                 on_input: Optional[Callable[[str], None]] = None,
-                 on_error: Optional[Callable[[str], None]] = None):
+    """
+    16进制键盘 - X/Y架构
+    
+    设计理念：
+    - X轴（KeyAction）：定义操作类型
+    - Y轴（数据）：hex字符串
+    
+    处理流程：
+    输入(X,Y) → 解析 → 执行 → 输出
+    
+    人类键盘对照：
+    - 功能键区（F1-F12）→ KeyAction
+    - 主键区 → Y轴数据
+    - Shift/Ctrl → 修饰符（扩展动作）
+    """
+    
+    # 键位映射表（简化版，可扩展）
+    KEY_MAP = {
+        # 单字符快捷键
+        'P': KeyAction.PRINT,
+        'E': KeyAction.ECHO,
+        'S': KeyAction.SAVE,
+        'L': KeyAction.LOG,
+        'A': KeyAction.APPEND,
+        'R': KeyAction.RESET,
+        'Q': KeyAction.QUIT,
+        '?': KeyAction.STATS,
+        '#': KeyAction.NOP,
+        
+        # 功能键
+        'F1': KeyAction.PRINT,
+        'F2': KeyAction.SAVE,
+        'F3': KeyAction.LOAD,
+        'F4': KeyAction.LOG,
+        'F5': KeyAction.STATS,
+        'F10': KeyAction.QUIT,
+    }
+    
+    def __init__(self,
+                 output_dir: str = './keyboard_output',
+                 log_file: str = None,
+                 max_buffer: int = 4096,
+                 auto_convert: bool = True,
+                 on_action: Optional[Callable] = None):
         """
-        max_length: 最大输入长度
-        auto_pad: 是否自动补齐到偶数位（每2个hex=1字节）
-        on_input: 输入回调 (hex_str) -> None
-        on_error: 错误回调 (error_msg) -> None
+        初始化键盘
+        
+        output_dir: 输出目录
+        log_file: 日志文件路径
+        max_buffer: 最大缓冲区大小
+        auto_convert: 是否自动将hex转为字符串
+        on_action: 动作执行回调 (action, data) -> result
         """
-        self.max_length = max_length
-        self.auto_pad = auto_pad
-        self.on_input = on_input
-        self.on_error = on_error
+        self.output_dir = output_dir
+        self.log_file = log_file or os.path.join(output_dir, 'keyboard.log')
+        self.max_buffer = max_buffer
+        self.auto_convert = auto_convert
+        self.on_action = on_action
         
         # 缓冲区
-        self.buffer = ''
-        self.history: list[str] = []
+        self.x_buffer: Optional[KeyAction] = None  # X轴（当前动作）
+        self.y_buffer: str = ""                     # Y轴（数据）
         
-        # 缓存模式状态
-        self._cache_mode = False
-        self._cache_buffer = ''
+        # 历史
+        self.history: list[tuple[KeyAction, str]] = []
         
-    def input(self, text: str) -> str:
-        """
-        处理输入文本，返回清洗后的hex字符串
-        自动过滤非hex字符
-        """
+        # 统计
+        self.stats = {
+            'total_inputs': 0,
+            'actions': {a.value: 0 for a in KeyAction}
+        }
+        
+        # 创建输出目录
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 初始化日志
+        self._init_log()
+    
+    def _init_log(self):
+        """初始化日志"""
+        if not os.path.exists(self.log_file):
+            with open(self.log_file, 'w', encoding='utf-8') as f:
+                f.write(f"# HexKeyboard Log - {datetime.now().isoformat()}\n")
+    
+    def _log(self, message: str, level: str = 'INFO'):
+        """写入日志"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open(self.log_file, 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] [{level}] {message}\n")
+    
+    def _convert_hex_to_string(self, hex_str: str) -> str:
+        """将hex转为可读字符串"""
+        if not self.auto_convert:
+            return hex_str
+        
         try:
-            # 过滤非hex字符
-            cleaned = self._clean_hex(text.upper())
-            
-            if not cleaned:
-                return ''
-            
-            # 补齐到偶数位
-            if self.auto_pad and len(cleaned) % 2 == 1:
-                cleaned = cleaned[:-1]  # 去掉最后一个奇数字符
-            
-            # 截断超长部分
-            if len(cleaned) > self.max_length:
-                cleaned = cleaned[:self.max_length]
-            
-            # 更新缓冲区
-            self.buffer = cleaned
-            
-            # 触发回调
-            if self.on_input:
-                self.on_input(cleaned)
-            
-            return cleaned
-            
-        except Exception as e:
-            if self.on_error:
-                self.on_error(str(e))
-            return ''
+            # 使用词元模块
+            return hex_to_str(hex_str)
+        except Exception:
+            # 回退：尝试部分转换
+            return f"[hex:{hex_str}]"
     
-    def _clean_hex(self, text: str) -> str:
-        """过滤，只保留hex字符"""
-        return ''.join(c for c in text if c in HEX_CHARS)
-    
-    def set_mode(self, mode: InputMode):
-        """切换输入模式"""
-        self._cache_mode = (mode == InputMode.CACHE)
-        if mode == InputMode.BATCH:
-            self._cache_buffer = ''
-        else:
-            self._cache_buffer = self.buffer
-    
-    def cache_input(self, text: str) -> str:
+    def _parse_input(self, raw_input: str) -> tuple[Optional[KeyAction], str]:
         """
-        缓存模式输入（追加到缓冲区）
+        解析输入，分离X和Y
+        
+        格式：
+        - ":PRINT:deadbeef" -> (PRINT, "deadbeef")
+        - "P deadbeef" -> (PRINT, "deadbeef")
+        - "deadbeef" -> (ECHO, "deadbeef")  # 默认ECHO
+        - "?" -> (STATS, "")
         """
-        cleaned = self._clean_hex(text.upper())
+        raw = raw_input.strip().upper()
         
-        if self.auto_pad and len(cleaned) % 2 == 1:
-            cleaned = cleaned[:-1]
+        if not raw:
+            return None, ""
         
-        # 追加到缓存
-        new_total = self._cache_buffer + cleaned
-        if len(new_total) > self.max_length:
-            new_total = new_total[:self.max_length]
+        # 格式1: :ACTION:DATA
+        if raw.startswith(':'):
+            parts = raw[1:].split(':', 1)
+            if len(parts) == 2:
+                action_str, data = parts
+                action = self._parse_action(action_str)
+                if action:
+                    return action, data
         
-        self._cache_buffer = new_total
-        self.buffer = new_total
+        # 格式2: SHORTCUT DATA
+        parts = raw.split(None, 1)
+        if len(parts) == 2:
+            shortcut, data = parts
+            action = self.KEY_MAP.get(shortcut)
+            if action:
+                return action, data
         
-        if self.on_input:
-            self.on_input(new_total)
+        # 格式3: 单字符快捷键
+        if len(raw) == 1:
+            action = self.KEY_MAP.get(raw)
+            if action:
+                return action, ""
         
-        return new_total
+        # 格式4: 功能键
+        if raw.startswith('F'):
+            action = self.KEY_MAP.get(raw)
+            if action:
+                return action, ""
+        
+        # 默认：作为ECHO处理
+        return KeyAction.ECHO, raw
     
-    def reset_cache(self):
-        """重置缓存"""
-        self._cache_buffer = ''
-        self.buffer = ''
+    def _parse_action(self, action_str: str) -> Optional[KeyAction]:
+        """解析动作字符串"""
+        action_str = action_str.upper().strip()
+        
+        # 别名映射
+        alias_map = {
+            'ERR': 'LOG_ERROR',
+            'ERROR': 'LOG_ERROR',
+            'WARNING': 'ALERT',
+            'WARN': 'ALERT',
+            'ECHO': 'ECHO',
+            'READ': 'LOAD',
+            'WRITE': 'SAVE',
+            'STATS': 'STATS',
+            'STAT': 'STATS',
+        }
+        
+        if action_str in alias_map:
+            action_str = alias_map[action_str]
+        
+        # 直接匹配
+        try:
+            return KeyAction[action_str]
+        except KeyError:
+            pass
+        
+        # 快捷键匹配
+        return self.KEY_MAP.get(action_str)
     
-    def get_buffer(self) -> str:
-        """获取当前缓冲区"""
-        return self.buffer
+    def input(self, raw_input: str) -> str:
+        """
+        处理输入
+        
+        参数:
+            raw_input: 原始输入字符串
+        
+        返回:
+            执行结果
+        """
+        self.stats['total_inputs'] += 1
+        
+        # 解析输入
+        action, data = self._parse_input(raw_input)
+        
+        if action is None:
+            return ""
+        
+        # 更新统计
+        self.stats['actions'][action.value] += 1
+        
+        # 添加历史
+        self.history.append((action, data))
+        if len(self.history) > 100:
+            self.history.pop(0)
+        
+        # 执行动作
+        result = self._execute(action, data)
+        
+        # 触发回调
+        if self.on_action:
+            try:
+                self.on_action(action, data, result)
+            except Exception:
+                pass
+        
+        return result
     
-    def get_cache(self) -> str:
-        """获取缓存内容"""
-        return self._cache_buffer
+    def _execute(self, action: KeyAction, data: str) -> str:
+        """执行动作"""
+        self._log(f"Execute: X={action.value}, Y={data[:32]}...")
+        
+        # 数据清理
+        data = ''.join(c for c in data.upper() if c in HEX_CHARS)
+        
+        if action == KeyAction.PRINT:
+            # 屏幕打印：hex → 字符串 → 打印
+            readable = self._convert_hex_to_string(data)
+            output = f">>> {readable}"
+            print(output)
+            self._log(f"PRINT: {readable}")
+            return output
+        
+        elif action == KeyAction.ECHO:
+            # 回显：直接打印hex
+            output = f"[hex] {data}"
+            print(output)
+            self._log(f"ECHO: {data}")
+            return output
+        
+        elif action == KeyAction.ALERT:
+            # 警告
+            readable = self._convert_hex_to_string(data)
+            output = f"⚠ {readable}"
+            print(output)
+            self._log(f"ALERT: {readable}", 'WARNING')
+            return output
+        
+        elif action == KeyAction.SAVE:
+            # 保存文件
+            return self._save_file(data)
+        
+        elif action == KeyAction.APPEND:
+            # 追加文件
+            return self._append_file(data)
+        
+        elif action == KeyAction.LOAD:
+            # 读取文件
+            return self._load_file(data)
+        
+        elif action == KeyAction.LOG:
+            # 记录日志
+            readable = self._convert_hex_to_string(data)
+            self._log(f"USER LOG: {readable}")
+            output = f"[logged] {readable}"
+            print(output)
+            return output
+        
+        elif action == KeyAction.LOG_DEBUG:
+            readable = self._convert_hex_to_string(data)
+            self._log(f"DEBUG: {readable}", 'DEBUG')
+            return f"[debug] {readable}"
+        
+        elif action == KeyAction.LOG_ERROR:
+            readable = self._convert_hex_to_string(data)
+            self._log(f"ERROR: {readable}", 'ERROR')
+            output = f"❌ {readable}"
+            print(output)
+            return output
+        
+        elif action == KeyAction.STATS:
+            # 显示统计
+            return self._show_stats()
+        
+        elif action == KeyAction.STATUS:
+            # 显示状态
+            return self._show_status()
+        
+        elif action == KeyAction.RESET:
+            # 重置
+            self.x_buffer = None
+            self.y_buffer = ""
+            self._log("Reset")
+            return "[reset] OK"
+        
+        elif action == KeyAction.LEARN_ON:
+            self._log("Learning enabled")
+            return "[learn] ON"
+        
+        elif action == KeyAction.LEARN_OFF:
+            self._log("Learning disabled")
+            return "[learn] OFF"
+        
+        elif action == KeyAction.SAVE_STATE:
+            self._log("State saved")
+            return "[state] saved"
+        
+        elif action == KeyAction.QUIT:
+            self._log("Quit requested")
+            return "[quit]"
+        
+        elif action == KeyAction.NOP:
+            return ""
+        
+        return f"[unknown action: {action.value}]"
     
-    def push_history(self):
-        """将当前缓冲区推入历史"""
-        if self.buffer:
-            self.history.append(self.buffer)
-            # 限制历史长度
-            if len(self.history) > 100:
-                self.history.pop(0)
+    def _save_file(self, data: str) -> str:
+        """保存文件"""
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"output_{timestamp}.hex"
+        filepath = os.path.join(self.output_dir, filename)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(data)
+        
+        self._log(f"Saved to {filepath}")
+        return f"[saved] {filename}"
     
-    def get_history(self, n: int = 10) -> list[str]:
-        """获取最近n条历史"""
-        return self.history[-n:]
+    def _append_file(self, data: str) -> str:
+        """追加文件"""
+        filename = f"log_{datetime.now().strftime('%Y%m%d')}.hex"
+        filepath = os.path.join(self.output_dir, filename)
+        
+        with open(filepath, 'a', encoding='utf-8') as f:
+            f.write(data + '\n')
+        
+        self._log(f"Appended to {filepath}")
+        return f"[appended] {filename}"
     
-    def clear(self):
-        """清空缓冲区"""
-        self.buffer = ''
-        self._cache_buffer = ''
+    def _load_file(self, hex_path: str) -> str:
+        """读取文件"""
+        # hex_path是hex编码的文件路径
+        filepath = self._convert_hex_to_string(hex_path)
+        
+        if not os.path.exists(filepath):
+            return f"[error] File not found: {filepath}"
+        
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        self._log(f"Loaded from {filepath}")
+        return f"[loaded] {content[:100]}..."
     
-    def char_count(self) -> int:
-        """当前hex字符数量"""
-        return len(self.buffer)
+    def _show_stats(self) -> str:
+        """显示统计"""
+        lines = [
+            "=== Keyboard Stats ===",
+            f"Total inputs: {self.stats['total_inputs']}",
+            "Actions:",
+        ]
+        
+        for action_name, count in sorted(self.stats['actions'].items(), key=lambda x: -x[1]):
+            if count > 0:
+                lines.append(f"  {action_name}: {count}")
+        
+        output = '\n'.join(lines)
+        print(output)
+        return output
     
-    def byte_count(self) -> int:
-        """当前字节数量（2个hex=1字节）"""
-        return len(self.buffer) // 2
+    def _show_status(self) -> str:
+        """显示状态"""
+        output = f"""=== Keyboard Status ===
+X buffer: {self.x_buffer.value if self.x_buffer else 'None'}
+Y buffer: {self.y_buffer[:32]}...
+History: {len(self.history)} items
+Output dir: {self.output_dir}
+"""
+        print(output)
+        return output
     
-    def is_empty(self) -> bool:
-        """缓冲区是否为空"""
-        return len(self.buffer) == 0
+    def set_x(self, action: KeyAction):
+        """设置X轴（动作）"""
+        self.x_buffer = action
     
-    def is_full(self) -> bool:
-        """缓冲区是否已满"""
-        return len(self.buffer) >= self.max_length
+    def append_y(self, data: str):
+        """追加Y轴（数据）"""
+        self.y_buffer += ''.join(c for c in data.upper() if c in HEX_CHARS)
+        # 限制长度
+        if len(self.y_buffer) > self.max_buffer:
+            self.y_buffer = self.y_buffer[-self.max_buffer:]
+    
+    def execute_xy(self) -> str:
+        """执行X,Y"""
+        if self.x_buffer is None:
+            return ""
+        
+        result = self._execute(self.x_buffer, self.y_buffer)
+        self.x_buffer = None
+        self.y_buffer = ""
+        return result
+    
+    def reset(self):
+        """重置"""
+        self.x_buffer = None
+        self.y_buffer = ""
+        self.history.clear()
+    
+    def get_stats(self) -> dict:
+        """获取统计"""
+        return {
+            **self.stats,
+            'x_buffer': self.x_buffer.value if self.x_buffer else None,
+            'y_buffer_len': len(self.y_buffer),
+            'history_len': len(self.history)
+        }
     
     def __repr__(self):
-        mode = 'CACHE' if self._cache_mode else 'STREAMING'
-        return f"HexKeyboard(buffer='{self.buffer[:16]}...', len={len(self.buffer)}, mode={mode})"
+        x = self.x_buffer.value if self.x_buffer else 'None'
+        y = self.y_buffer[:16] + '...' if len(self.y_buffer) > 16 else self.y_buffer
+        return f"HexKeyboard(X={x}, Y={y})"
 
 
-class HexKeyboardWithValidator(HexKeyboard):
-    """带验证器的键盘"""
-    
-    def __init__(self, max_length: int = 256, auto_pad: bool = False,
-                 validators: Optional[list[Callable[[str], tuple[bool, str]]]] = None,
-                 on_input: Optional[Callable[[str], None]] = None,
-                 on_error: Optional[Callable[[str], None]] = None):
-        """
-        validators: 验证器列表，每个验证器返回 (is_valid, error_msg)
-        """
-        super().__init__(max_length, auto_pad, on_input, on_error)
-        self.validators = validators or []
-    
-    def input(self, text: str) -> str:
-        """带验证的输入"""
-        cleaned = super().input(text)
-        
-        if not cleaned:
-            return ''
-        
-        # 运行验证器
-        for validator in self.validators:
-            is_valid, error_msg = validator(cleaned)
-            if not is_valid:
-                if self.on_error:
-                    self.on_error(error_msg)
-                return ''
-        
-        return cleaned
-
-
-# ============ 内置验证器 ============
-
-def validate_length(min_len: int = 0, max_len: int = 256) -> Callable[[str], tuple[bool, str]]:
-    """长度验证器"""
-    def validate(text: str) -> tuple[bool, str]:
-        if len(text) < min_len:
-            return False, f"长度不足，最少{min_len}个hex字符"
-        if len(text) > max_len:
-            return False, f"长度超限，最多{max_len}个hex字符"
-        return True, ''
-    return validate
-
-
-def validate_even_length() -> Callable[[str], tuple[bool, str]]:
-    """偶数长度验证器"""
-    def validate(text: str) -> tuple[bool, str]:
-        if len(text) % 2 != 0:
-            return False, "长度必须为偶数（完整字节）"
-        return True, ''
-    return validate
-
-
-def validate_hex_pattern(pattern: str) -> Callable[[str], tuple[bool, str]]:
-    """正则模式验证"""
-    compiled = re.compile(pattern)
-    def validate(text: str) -> tuple[bool, str]:
-        if not compiled.match(text):
-            return False, f"不符合格式要求: {pattern}"
-        return True, ''
-    return validate
-
-
-# ============ 简单测试 ============
+# ============ 使用示例 ============
 if __name__ == "__main__":
-    print("=" * 50)
-    print("HexKeyboard 测试")
-    print("=" * 50)
+    print("=" * 60)
+    print("HexKeyboard X/Y 架构演示")
+    print("=" * 60)
     
-    # 基本使用
-    kb = HexKeyboard(max_length=32, auto_pad=True)
-    print(f"\n创建键盘: {kb}")
+    # 创建键盘
+    kb = HexKeyboard(output_dir='./keyboard_demo')
     
-    result = kb.input("DEADBEEF")
-    print(f"输入 'DEADBEEF' -> '{result}'")
+    print("\n--- 测试各种输入格式 ---\n")
     
-    result = kb.input("DE AD BE EF CA FE 12345!@#")
-    print(f"输入 'DE AD BE EF CA FE 12345!@#' -> '{result}'")
+    # 格式1: :ACTION:DATA
+    print("1. :PRINT:e4bda0e5a5bd (打印汉字'你好')")
+    kb.input(":PRINT:e4bda0e5a5bd")
     
-    result = kb.input("GHIJ")  # GHIJ不是hex
-    print(f"输入 'GHIJ' -> '{result}'")
+    print()
     
-    # 缓存模式
-    print("\n【缓存模式测试】")
-    kb.set_mode(InputMode.CACHE)
-    kb.cache_input("AAAA")
-    kb.cache_input("BBBB")
-    print(f"缓存内容: '{kb.get_cache()}'")
-    print(f"字符数: {kb.char_count()}, 字节数: {kb.byte_count()}")
+    # 格式2: 快捷键
+    print("2. P e4bda0e5a5bd (快捷键打印)")
+    kb.input("P e4bda0e5a5bd")
     
-    # 带验证器
-    print("\n【带验证器测试】")
-    validator_kb = HexKeyboardWithValidator(
-        max_length=16,
-        auto_pad=False,
-        validators=[validate_length(4, 16), validate_even_length()]
-    )
+    print()
     
-    validator_kb.input("ABCD")  # OK
-    print("输入 'ABCD' -> 成功")
+    # 格式3: 默认ECHO
+    print("3. DEADBEEF (默认ECHO)")
+    kb.input("DEADBEEF")
     
-    validator_kb.input("AB")  # 太短
-    print("输入 'AB' -> 失败（长度不足）")
+    print()
     
-    validator_kb.input("ABC")  # 奇数
-    print("输入 'ABC' -> 失败（长度必须为偶数）")
+    # 格式4: 显示统计
+    print("4. ? (显示统计)")
+    kb.input("?")
     
-    # 历史记录
-    print("\n【历史记录测试】")
-    kb2 = HexKeyboard()
-    for i in range(5):
-        kb2.input(f"00{i:02X}")
-        kb2.push_history()
+    print()
     
-    print(f"最近3条历史: {kb2.get_history(3)}")
+    # 格式5: 保存文件
+    print("5. S cafebabe (保存文件)")
+    kb.input("S cafebabe")
+    
+    print()
+    
+    # 格式6: 记录日志
+    print("6. L 48656c6c6f (记录日志，hex='Hello')")
+    kb.input("L 48656c6c6f")
+    
+    print()
+    
+    # 格式7: 错误日志
+    print("7. :ERROR:e4bda0e5a5bde5a4aae695b0e4b8ade695af (错误日志)")
+    kb.input(":ERROR:e4bda0e5a5bde5a4aae695b0e4b8ade695af")
+    
+    print("\n--- X/Y 手动模式 ---\n")
+    
+    # 手动设置X和Y
+    kb.set_x(KeyAction.PRINT)
+    kb.append_y("e4bda0e5a5bd")
+    print(f"X={kb.x_buffer}, Y={kb.y_buffer}")
+    kb.execute_xy()
+    
+    print("\n--- 最终统计 ---\n")
+    print(kb.get_stats())
