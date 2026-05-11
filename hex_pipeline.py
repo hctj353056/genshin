@@ -26,7 +26,7 @@ class OutputMode(Enum):
 
 class HexPipeline:
     def __init__(self,
-                 mha_seq_len: int = 16,
+                 mha_seq_len: int = 32,
                  mha_dim: int = 64,
                  mha_heads: int = 4,
                  mha_embed_dim: int = 64,
