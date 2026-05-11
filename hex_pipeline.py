@@ -197,7 +197,7 @@ class HexPipeline:
         
         # 读取hex内容（截取与seq_len匹配的长度）
         with open(hex_file, 'r', encoding='utf-8') as f:
-            hex_content = f.read()[:self.keyboard.max_length]
+            hex_content = f.read()[:self.keyboard.max_buffer]
         self._log(f"文件hex长度: {len(hex_content)}")
         
         # 2. 如果有索引，拼接
