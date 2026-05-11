@@ -47,11 +47,12 @@ class OnlineLearner:
     """
     在线学习器
     
-    学习目标：让MHA输出能成功转换为UTF-8字符串的hex
+    学习目标：让MHA学会"复制"输入hex到输出hex
     
     策略：
-    - 如果MHA输出能成功转字符串 → 记录成功经验，强化这个输出
-    - 如果MHA输出不能转字符串 → 记录失败样本，学习目标设为原始输入（让MHA学会原样输出）
+    - 每次输入hex后，期望输出 = 输入hex
+    - 计算输出与输入的差异，朝着减少差异的方向调整参数
+    - 如果输出能成功解码 → 成功；否则 → 学习目标=输入
     """
     
     def __init__(self, model: HexMHA, lr: float = 0.01):
@@ -60,61 +61,58 @@ class OnlineLearner:
         self.success_count = 0
         self.fail_count = 0
         self.total_updates = 0
-        self.update_interval = 5  # 更频繁更新
-        self.batch_size = 4
         
     def record(self, input_hex: str, mha_output: str, is_valid: bool) -> str:
         """
-        记录经验样本
+        记录经验并学习
         
-        Returns:
-            学习目标hex
+        核心：将输出朝着输入的方向调整
         """
         if is_valid:
-            # 成功：MHA输出能转字符串，强化这个输出
-            target = mha_output
             self.success_count += 1
+            # 成功：强化这个输出模式
+            target = mha_output
         else:
-            # 失败：MHA输出不能转字符串，学习目标设为输入（让MHA原样输出）
-            target = input_hex
             self.fail_count += 1
-            
-        # 构建经验样本
-        exp = Experience(
-            input_hex=input_hex,
-            mha_output=mha_output,
-            is_valid=is_valid,
-            target_hex=target
-        )
-        
-        # 触发学习
-        self.total_updates += 1
-        if self.total_updates % self.update_interval == 0:
-            self._update()
+            # 失败：学习目标是输入hex
+            target = input_hex
+            # 立即朝着输入方向调整
+            self._learn_towards_input(input_hex, mha_output)
             
         return target
     
-    def _update(self):
-        """执行参数更新（简单随机扰动）"""
-        # 随机选择一个可学习参数进行微调
-        param_choice = np.random.randint(0, 4)
-        if param_choice == 0:
-            param = self.model.classifier
-        elif param_choice == 1:
-            param = self.model.token_embed
-        elif param_choice == 2:
-            param = self.model.pos_embed
-        else:
-            param = self.model.Wo
-            
-        # 根据成功率调整扰动幅度
-        success_rate = self.success_count / max(1, self.success_count + self.fail_count)
-        # 成功率高 → 扰动小（稳定）；成功率低 → 扰动大（探索）
-        noise_scale = self.lr * (1.0 - success_rate + 0.1)
+    def _learn_towards_input(self, target_hex: str, current_hex: str):
+        """
+        将输出朝着输入方向调整
         
-        # 生成与选中参数相同形状的噪声并更新
-        noise = np.random.randn(*param.shape).astype(np.float32) * noise_scale
-        param += noise
+        策略：找到classifier中与target_hex匹配度更高的权重方向
+        """
+        target_len = min(len(target_hex), len(current_hex))
+        if target_len == 0:
+            return
+            
+        # 简单策略：调整classifier，朝着target的方向
+        # classifier是 (embed_dim, 16)，输出16个hex字符的概率
+        target_indices = [HEX_TO_IDX.get(c, 0) for c in target_hex]
+        
+        # 找到当前输出与目标的差异
+        current_indices = [HEX_TO_IDX.get(c, 0) for c in current_hex[:target_len]]
+        
+        # 朝着目标调整（增加目标字符的权重，减少其他字符）
+        for pos, (tgt_idx, cur_idx) in enumerate(zip(target_indices, current_indices)):
+            if tgt_idx != cur_idx:
+                # 找到输出层中对应这个位置的权重
+                # classifier的形状是 (embed_dim, 16)
+                # 对于位置pos，增加tgt_idx对应的权重，减少cur_idx对应的
+                noise = np.random.randn(16).astype(np.float32) * self.lr * 0.1
+                noise[tgt_idx] += self.lr * 0.5  # 增强目标
+                noise[cur_idx] -= self.lr * 0.3  # 削弱当前
+                
+                # 只对随机选择的行应用（避免全部更新导致崩溃）
+                row_idx = np.random.randint(0, self.model.classifier.shape[0])
+                self.model.classifier[row_idx] += noise
+                
+        self.total_updates += 1
         
     def get_stats(self) -> dict:
         total = self.success_count + self.fail_count
