@@ -56,7 +56,8 @@ class HexMHA:
         rng = np.random.default_rng(seed)
 
         # 可学习的字符嵌入 (16, embed_dim)
-        self.token_embed = rng.normal(scale=0.1, size=(16, embed_dim)).astype(np.float32)
+        # 初始化为独热码，便于学习"复制"
+        self.token_embed = np.eye(16, embed_dim, dtype=np.float32)
 
         # 可学习的位置嵌入 (seq_len, embed_dim)
         self.pos_embed = rng.normal(scale=0.1, size=(seq_len, embed_dim)).astype(np.float32)
@@ -76,7 +77,8 @@ class HexMHA:
         self.ln2_beta = np.zeros(embed_dim, dtype=np.float32)
 
         # 最终分类头：embed_dim -> 16
-        self.classifier = rng.normal(scale=0.1, size=(embed_dim, 16)).astype(np.float32)
+        # 初始化为token_embed的转置，便于实现"复制"
+        self.classifier = self.token_embed.T.copy()
 
         # 缓存状态（用于增量推理）
         self.cache_k: Optional[np.ndarray] = None
