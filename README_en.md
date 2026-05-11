@@ -213,6 +213,51 @@ cd genshin
 python hex_pipeline.py
 ```
 
+## HexAgent - Online Learning Main Process
+
+HexAgent is a continuously running Agent with **online learning** support, inspired by OpenClaw Agent Loop architecture.
+
+### Core Features
+
+- **Infinite Loop**: Continuously wait → process → learn → output
+- **Online Learning**: Incrementally update HexMHA weights after each processing
+- **Event-Driven**: Supports `on_input`, `on_output`, `on_learn` hooks
+- **Dual Mode**: Interactive (CLI) and Service (TCP) modes
+
+### Quick Start
+
+```python
+from hex_agent import HexAgent
+
+# Create Agent (with online learning)
+agent = HexAgent(enable_online_learning=True, learning_rate=0.01)
+
+# Interactive mode
+agent.run_interactive()
+```
+
+### CLI Usage
+
+```bash
+python hex_agent.py --mode interactive
+
+# Disable online learning
+python hex_agent.py --mode interactive --no-learning
+
+# Service mode (TCP)
+python hex_agent.py --mode service --port 8765
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `:learn on/off` | Enable/disable online learning |
+| `:save` | Save state to file |
+| `:stats` | Show statistics |
+| `:reset` | Reset MHA cache |
+| `:quit` | Exit |
+
 ## Project Documentation Index
 
 | Document | Description | Link |
