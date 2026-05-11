@@ -184,6 +184,12 @@ class HexAgent:
         self._setup_logger()
         self._load_state()
         
+        # 如果没有加载到保存的状态，进行预训练
+        state_file = os.path.join(state_dir, 'model_state.npz')
+        if not os.path.exists(state_file):
+            print(f"   正在进行预训练...")
+            self._pretrain()
+        
         print(f"✅ HexAgent 初始化完成")
         print(f"   在线学习: {'启用' if self.enable_learning else '禁用'}")
         print(f"   学习率: {learning_rate}")
@@ -218,6 +224,42 @@ class HexAgent:
                 print(f"✅ 已加载保存的模型状态")
             except Exception as e:
                 self.logger.warning(f"加载状态失败: {e}")
+    
+    def _pretrain(self):
+        """预训练：让MHA学会'复制'输入hex到输出"""
+        print(f"   预训练: 学习复制输入...")
+        
+        # 训练样本
+        samples = [
+            "你好", "hello", "你好世界", "ABC",
+            "test", "123", "hello world", "你好123"
+        ]
+        
+        for text in samples:
+            hex_str = str_to_hex(text).upper().replace(' ', '')
+            for _ in range(10):  # 每个样本训练10次
+                output = self.mha.forward(hex_str, reset_cache=True)
+                if output == hex_str:
+                    break
+                # 学习：朝着目标调整
+                self._learn_towards_target(hex_str, output)
+        
+        print(f"   预训练完成!")
+        
+    def _learn_towards_target(self, target_hex: str, current_hex: str):
+        """将输出调整为等于目标hex"""
+        target_len = min(len(target_hex), len(current_hex))
+        for pos in range(target_len):
+            tgt_char = target_hex[pos]
+            tgt_idx = HEX_TO_IDX.get(tgt_char, 0)
+            cur_char = current_hex[pos] if pos < len(current_hex) else None
+            
+            if cur_char != tgt_char:
+                noise = np.zeros(16, dtype=np.float32)
+                noise[tgt_idx] += 0.5
+                for _ in range(3):
+                    row_idx = np.random.randint(0, self.mha.classifier.shape[0])
+                    self.mha.classifier[row_idx] += noise
     
     def _save_state(self):
         state_file = os.path.join(self.state_dir, 'model_state.npz')
