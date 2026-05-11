@@ -3,6 +3,8 @@
 # 
 # 架构参考：OpenClaw Agent Loop
 # 核心：键盘X/Y → HexMHA → 键盘X/Y输出
+#
+# 学习目标：让MHA学会输出能成功转换为UTF-8字符串的hex
 
 import os
 import sys
@@ -11,14 +13,14 @@ import json
 import logging
 import threading
 from datetime import datetime
-from typing import Optional, Callable, Literal
+from typing import Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 import numpy as np
 
 # 导入模块
 from hex_keyboard import HexKeyboard, KeyAction
-from hex_mha_module_v2 import HexMHA, layer_norm, softmax, cross_entropy_loss, HEX_TO_IDX
+from hex_mha_module_v2 import HexMHA, layer_norm, softmax, cross_entropy_loss, HEX_TO_IDX, IDX_TO_HEX
 from 词元模块_1778459060672_3xq9 import str_to_hex, hex_to_str
 from 解析模块_1778459060679_lsxn import file_to_hex, hex_to_file
 
@@ -34,57 +36,93 @@ class AgentState(Enum):
 @dataclass
 class Experience:
     """经验样本"""
-    input_hex: str
-    target_hex: str
+    input_hex: str          # 输入hex
+    mha_output: str         # MHA原始输出
+    is_valid: bool          # 是否能转为字符串
+    target_hex: str         # 学习目标（如果无效，则学习将输出调整为有效hex）
     timestamp: float = field(default_factory=time.time)
 
 
 class OnlineLearner:
-    """在线学习器"""
+    """
+    在线学习器
+    
+    学习目标：让MHA输出能成功转换为UTF-8字符串的hex
+    
+    策略：
+    - 如果MHA输出能成功转字符串 → 记录成功经验，强化这个输出
+    - 如果MHA输出不能转字符串 → 记录失败样本，学习目标设为原始输入（让MHA学会原样输出）
+    """
     
     def __init__(self, model: HexMHA, lr: float = 0.01):
         self.model = model
         self.lr = lr
-        self.experience_buffer: list[Experience] = []
-        self.batch_size = 4
-        self.update_interval = 10
+        self.success_count = 0
+        self.fail_count = 0
         self.total_updates = 0
+        self.update_interval = 5  # 更频繁更新
+        self.batch_size = 4
         
-    def add_experience(self, input_hex: str, target_hex: str):
-        self.experience_buffer.append(Experience(input_hex, target_hex))
+    def record(self, input_hex: str, mha_output: str, is_valid: bool) -> str:
+        """
+        记录经验样本
         
-        if len(self.experience_buffer) >= self.update_interval:
-            self.update()
-    
-    def update(self):
-        if len(self.experience_buffer) < self.batch_size:
-            return
+        Returns:
+            学习目标hex
+        """
+        if is_valid:
+            # 成功：MHA输出能转字符串，强化这个输出
+            target = mha_output
+            self.success_count += 1
+        else:
+            # 失败：MHA输出不能转字符串，学习目标设为输入（让MHA原样输出）
+            target = input_hex
+            self.fail_count += 1
+            
+        # 构建经验样本
+        exp = Experience(
+            input_hex=input_hex,
+            mha_output=mha_output,
+            is_valid=is_valid,
+            target_hex=target
+        )
         
-        batch = self.experience_buffer[-self.batch_size:]
-        total_loss = 0.0
-        
-        for exp in batch:
-            try:
-                x = self.model._embed(exp.input_hex)
-                L = x.shape[0]
-                logits = x @ self.model.classifier
-                tgt = [HEX_TO_IDX.get(c, 0) for c in exp.target_hex[:L]]
-                if len(tgt) < L:
-                    tgt += [0] * (L - len(tgt))
-                loss = cross_entropy_loss(logits, np.array(tgt[:L]))
-                total_loss += loss
-            except:
-                continue
-        
-        avg_loss = total_loss / len(batch)
-        noise_scale = self.lr * avg_loss
-        self.model.classifier += np.random.randn(*self.model.classifier.shape).astype(np.float32) * noise_scale
+        # 触发学习
         self.total_updates += 1
+        if self.total_updates % self.update_interval == 0:
+            self._update()
+            
+        return target
+    
+    def _update(self):
+        """执行参数更新（简单随机扰动）"""
+        # 随机选择一个可学习参数进行微调
+        param_choice = np.random.randint(0, 4)
+        if param_choice == 0:
+            param = self.model.classifier
+        elif param_choice == 1:
+            param = self.model.token_embed
+        elif param_choice == 2:
+            param = self.model.pos_embed
+        else:
+            param = self.model.Wo
+            
+        # 根据成功率调整扰动幅度
+        success_rate = self.success_count / max(1, self.success_count + self.fail_count)
+        # 成功率高 → 扰动小（稳定）；成功率低 → 扰动大（探索）
+        noise_scale = self.lr * (1.0 - success_rate + 0.1)
         
-        if len(self.experience_buffer) > 1000:
-            self.experience_buffer = self.experience_buffer[-500:]
+        noise = np.random.randn(*param.shape).astype(np.float32) * noise_scale
+        self.model.classifier += noise
         
-        return avg_loss
+    def get_stats(self) -> dict:
+        total = self.success_count + self.fail_count
+        return {
+            'success': self.success_count,
+            'fail': self.fail_count,
+            'rate': self.success_count / max(1, total) if total > 0 else 0,
+            'updates': self.total_updates
+        }
 
 
 class HexAgent:
@@ -92,13 +130,19 @@ class HexAgent:
     Hex处理Agent
     
     核心流程：
-    输入 → 键盘(X/Y) → HexMHA → 键盘(X/Y)输出
+    输入 → 键盘X(操作模式) + Y(hex数据) → HexMHA → 尝试转为字符串 → 键盘X输出
     
     X轴定义操作模式：
-    - PRINT: 输出转为字符串
+    - PRINT: 输出转为字符串打印
     - ECHO: 输出hex
     - SAVE: 保存到文件
     - LOG: 记录日志
+    
+    学习闭环：
+    1. MHA输出hex
+    2. 尝试hex_to_str转换
+    3. 成功 → 打印字符串 + 记录成功经验
+    4. 失败 → 记录失败样本 + 学习目标=输入hex
     """
     
     def __init__(self,
@@ -122,12 +166,8 @@ class HexAgent:
         
         # 初始化键盘（X/Y架构）
         self.keyboard = HexKeyboard(
-            output_dir=os.path.join(state_dir, 'keyboard_output'),
-            auto_convert=True  # 自动hex转字符串
+            output_dir=os.path.join(state_dir, 'keyboard_output')
         )
-        
-        # 键盘动作回调
-        self.keyboard.on_action = self._on_keyboard_action
         
         # 在线学习器
         self.learner = OnlineLearner(self.mha, lr=learning_rate) if enable_online_learning else None
@@ -144,6 +184,10 @@ class HexAgent:
         os.makedirs(state_dir, exist_ok=True)
         self._setup_logger()
         self._load_state()
+        
+        print(f"✅ HexAgent 初始化完成")
+        print(f"   在线学习: {'启用' if self.enable_learning else '禁用'}")
+        print(f"   学习率: {learning_rate}")
     
     def _setup_logger(self):
         log_file = os.path.join(self.state_dir, 'agent.log')
@@ -162,7 +206,19 @@ class HexAgent:
     def _load_state(self):
         state_file = os.path.join(self.state_dir, 'model_state.npz')
         if os.path.exists(state_file):
-            self.logger.info("已加载保存的状态")
+            try:
+                data = np.load(state_file)
+                self.mha.token_embed = data['token_embed']
+                self.mha.pos_embed = data['pos_embed']
+                self.mha.Wq = data['Wq']
+                self.mha.Wk = data['Wk']
+                self.mha.Wv = data['Wv']
+                self.mha.Wo = data['Wo']
+                self.mha.classifier = data['classifier']
+                self.logger.info("已加载保存的状态")
+                print(f"✅ 已加载保存的模型状态")
+            except Exception as e:
+                self.logger.warning(f"加载状态失败: {e}")
     
     def _save_state(self):
         state_file = os.path.join(self.state_dir, 'model_state.npz')
@@ -176,44 +232,98 @@ class HexAgent:
                     Wo=self.mha.Wo,
                     classifier=self.mha.classifier)
             self.logger.info("状态已保存")
+            print(f"✅ 状态已保存")
         except Exception as e:
             self.logger.error(f"保存状态失败: {e}")
+            print(f"❌ 保存失败: {e}")
     
-    def _on_keyboard_action(self, action: KeyAction, data: str, result: str):
-        """键盘动作回调"""
-        self.logger.info(f"键盘: X={action.value}, Y={data[:32]}...")
+    def _try_decode(self, hex_str: str) -> Tuple[bool, str]:
+        """
+        尝试将hex解码为字符串
+        
+        Returns:
+            (是否成功, 解码结果/错误信息)
+        """
+        try:
+            text = bytes.fromhex(hex_str).decode('utf-8')
+            return True, text
+        except (ValueError, UnicodeDecodeError) as e:
+            return False, str(e)
     
-    def process(self, input_text: str, x_action: KeyAction = KeyAction.PRINT) -> str:
+    def process(self, input_text: str, output_mode: KeyAction = KeyAction.PRINT) -> dict:
         """
         处理输入
         
-        流程：文本 → hex → HexMHA → 输出(X,Y)
+        流程：文本 → hex → HexMHA → 尝试转字符串 → 输出(X,Y) → 学习
         
         Args:
             input_text: 用户输入文本
-            x_action: 输出模式（默认PRINT，转字符串）
+            output_mode: 输出模式
         
         Returns:
-            处理后的字符串结果
+            处理结果字典
         """
         self.state = AgentState.PROCESSING
+        result = {
+            'success': False,
+            'input_text': input_text,
+            'input_hex': '',
+            'mha_output': '',
+            'is_valid': False,
+            'output_text': '',
+            'output_hex': '',
+            'error': None
+        }
         
         try:
             # 1. 词元模块：文本转hex
             input_hex = str_to_hex(input_text).upper().replace(' ', '')
-            self.logger.info(f"输入: {input_text} → hex: {input_hex[:32]}...")
+            result['input_hex'] = input_hex
+            self.logger.info(f"输入: {input_text}")
+            self.logger.info(f"hex: {input_hex}")
             
             # 2. HexMHA处理
-            output_hex = self.mha.forward(input_hex)
-            self.logger.info(f"MHA输出: {output_hex}")
+            mha_output = self.mha.forward(input_hex, reset_cache=True)
+            result['mha_output'] = mha_output
+            self.logger.info(f"MHA输出: {mha_output}")
             
-            # 3. 通过键盘X/Y输出
-            result = self._output(x_action, output_hex)
+            # 3. 尝试转为字符串（核心步骤）
+            is_valid, decoded = self._try_decode(mha_output)
+            result['is_valid'] = is_valid
             
-            # 4. 在线学习
-            if self.enable_learning and self.learner:
+            # 4. 根据模式输出
+            if output_mode == KeyAction.PRINT:
+                if is_valid:
+                    result['success'] = True
+                    result['output_text'] = decoded
+                    result['output_hex'] = input_hex  # 学习目标是输入hex
+                    print(f"\n{'='*50}")
+                    print(f"🎯 输出(字符串): {decoded}")
+                    print(f"{'='*50}")
+                    self.logger.info(f"输出成功: {decoded}")
+                else:
+                    result['output_hex'] = mha_output
+                    print(f"\n{'='*50}")
+                    print(f"⚠️  MHA输出无法转为字符串")
+                    print(f"   原始hex: {mha_output}")
+                    print(f"   错误: {decoded}")
+                    print(f"   将学习调整为有效输出...")
+                    print(f"{'='*50}")
+                    self.logger.warning(f"输出无效: {decoded}")
+            
+            elif output_mode == KeyAction.ECHO:
+                # 直接输出hex
+                result['success'] = True
+                result['output_hex'] = mha_output
+                print(f"\n[hex] {mha_output}")
+            
+            # 5. 记录经验并学习
+            if self.learner and self.enable_learning:
                 self.state = AgentState.LEARNING
-                self.learner.add_experience(input_hex, output_hex)
+                target = self.learner.record(input_hex, mha_output, is_valid)
+                result['target_hex'] = target
+                stats = self.learner.get_stats()
+                self.logger.info(f"学习统计: 成功{stats['success']}/失败{stats['fail']} ({stats['rate']:.1%})")
             
             self.processed_count += 1
             self.state = AgentState.IDLE
@@ -223,59 +333,25 @@ class HexAgent:
         except Exception as e:
             self.state = AgentState.ERROR
             self.logger.error(f"处理错误: {e}")
+            result['error'] = str(e)
             self.state = AgentState.IDLE
-            return f"[ERROR] {e}"
-    
-    def _output(self, action: KeyAction, hex_data: str) -> str:
-        """
-        通过键盘X/Y输出
-        
-        X=PRINT: hex转字符串后输出
-        X=ECHO: 直接输出hex
-        X=SAVE: 保存到文件
-        X=LOG: 记录日志
-        """
-        if action == KeyAction.PRINT:
-            # hex转字符串后打印
-            readable = hex_to_str(hex_data)
-            output = f">>> {readable}"
-            print(output)
-            self.logger.info(f"输出(字符串): {readable}")
-            return output
-        
-        elif action == KeyAction.ECHO:
-            # 直接输出hex
-            output = f"[hex] {hex_data}"
-            print(output)
-            self.logger.info(f"输出(hex): {hex_data}")
-            return output
-        
-        elif action == KeyAction.SAVE:
-            # 保存文件
-            return self.keyboard.input(f":SAVE:{hex_data}")
-        
-        elif action == KeyAction.LOG:
-            # 记录日志
-            return self.keyboard.input(f":LOG:{hex_data}")
-        
-        else:
-            # 默认PRINT
-            return self._output(KeyAction.PRINT, hex_data)
+            return result
     
     def run_interactive(self):
         """交互式运行"""
-        print("=" * 60)
+        print("\n" + "="*60)
         print("HexAgent - 交互模式")
-        print("=" * 60)
+        print("="*60)
         print("命令:")
-        print("  :learn on/off  - 开启/关闭在线学习")
-        print("  :save          - 保存状态")
-        print("  :stats         - 显示统计")
-        print("  :reset         - 重置缓存")
-        print("  :mode print    - 输出模式:转字符串")
-        print("  :mode echo     - 输出模式:hex")
-        print("  :quit          - 退出")
-        print("=" * 60)
+        print("  :learn on/off   - 开启/关闭在线学习")
+        print("  :save           - 保存状态")
+        print("  :stats          - 显示统计")
+        print("  :reset          - 重置缓存")
+        print("  :mode print     - 输出模式:转字符串(默认)")
+        print("  :mode echo      - 输出模式:直接hex")
+        print("  :test           - 运行测试用例")
+        print("  :quit           - 退出")
+        print("="*60)
         
         self.running = True
         current_mode = KeyAction.PRINT
@@ -293,27 +369,31 @@ class HexAgent:
                         self.running = False
                     elif user_input == ':learn on':
                         self.enable_learning = True
-                        print("[learn] ON")
+                        if self.learner:
+                            self.learner = OnlineLearner(self.mha, lr=self.learner.lr)
+                        print("[learn] ✅ 在线学习已开启")
                     elif user_input == ':learn off':
                         self.enable_learning = False
-                        print("[learn] OFF")
+                        print("[learn] ⛔ 在线学习已关闭")
                     elif user_input == ':save':
                         self._save_state()
                     elif user_input == ':stats':
                         self._show_stats()
                     elif user_input == ':reset':
                         self.mha.reset_cache()
-                        print("[reset] OK")
+                        print("[reset] ✅ 缓存已重置")
                     elif user_input == ':mode print':
                         current_mode = KeyAction.PRINT
-                        print("[mode] PRINT (hex转字符串)")
+                        print("[mode] PRINT - hex转字符串")
                     elif user_input == ':mode echo':
                         current_mode = KeyAction.ECHO
-                        print("[mode] ECHO (直接hex)")
+                        print("[mode] ECHO - 直接hex")
+                    elif user_input == ':test':
+                        self._run_tests()
                     continue
                 
                 # 处理普通输入
-                result = self.process(user_input, current_mode)
+                self.process(user_input, current_mode)
                 
             except KeyboardInterrupt:
                 print("\n\n正在退出...")
@@ -322,47 +402,86 @@ class HexAgent:
                 break
         
         self._save_state()
-        print("Agent已停止")
+        print("\nAgent已停止")
     
     def _show_stats(self):
         uptime = time.time() - self.start_time
-        print(f"\n=== Agent统计 ===")
+        print(f"\n{'='*50}")
+        print(f"📊 Agent统计")
+        print(f"{'='*50}")
         print(f"运行时间: {uptime:.1f}秒")
         print(f"处理次数: {self.processed_count}")
         print(f"当前状态: {self.state.value}")
         print(f"在线学习: {'启用' if self.enable_learning else '禁用'}")
         if self.learner:
-            print(f"学习更新: {self.learner.total_updates}次")
-        print("=" * 20)
+            stats = self.learner.get_stats()
+            print(f"学习统计:")
+            print(f"  - 成功: {stats['success']}")
+            print(f"  - 失败: {stats['fail']}")
+            print(f"  - 成功率: {stats['rate']:.1%}")
+            print(f"  - 更新次数: {stats['updates']}")
+        print(f"{'='*50}")
+    
+    def _run_tests(self):
+        """运行测试用例"""
+        print(f"\n{'='*50}")
+        print(f"🧪 运行测试用例")
+        print(f"{'='*50}")
+        
+        test_cases = [
+            "你好",
+            "Hello",
+            "你好世界",
+            "ABC",
+            "123",
+        ]
+        
+        for text in test_cases:
+            print(f"\n测试: {text}")
+            result = self.process(text, KeyAction.PRINT)
+            status = "✅" if result['is_valid'] else "❌"
+            print(f"  结果: {status}")
+            if result['is_valid']:
+                print(f"  输出: {result['output_text']}")
+            else:
+                print(f"  MHA输出: {result['mha_output']}")
+        
+        print(f"\n{'='*50}")
     
     def get_stats(self) -> dict:
-        return {
+        stats = {
             'state': self.state.value,
             'processed': self.processed_count,
             'uptime': time.time() - self.start_time,
             'learning': self.enable_learning
         }
+        if self.learner:
+            stats['learner'] = self.learner.get_stats()
+        return stats
 
 
 # ============ 主入口 ============
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='HexAgent')
+    parser = argparse.ArgumentParser(description='HexAgent - 16进制处理Agent')
     parser.add_argument('--mode', choices=['interactive'], default='interactive')
-    parser.add_argument('--no-learning', action='store_true')
-    parser.add_argument('--lr', type=float, default=0.01)
+    parser.add_argument('--no-learning', action='store_true', help='禁用在线学习')
+    parser.add_argument('--lr', type=float, default=0.01, help='学习率')
+    parser.add_argument('--state-dir', type=str, default='./genshin_state', help='状态保存目录')
     args = parser.parse_args()
+    
+    print(f"\n{'='*60}")
+    print(f"HexAgent 启动中...")
+    print(f"{'='*60}")
     
     agent = HexAgent(
         enable_online_learning=not args.no_learning,
-        learning_rate=args.lr
+        learning_rate=args.lr,
+        state_dir=args.state_dir
     )
     
-    print(f"\n{'='*60}")
-    print(f"HexAgent 初始化完成")
-    print(f"{'='*60}")
-    print(f"Agent: {agent}")
+    print(f"\nAgent: {agent}")
     print(f"{'='*60}\n")
     
     agent.run_interactive()
