@@ -221,8 +221,41 @@ HexAgent is a continuously running Agent with **online learning** support, inspi
 
 - **Infinite Loop**: Continuously wait → process → learn → output
 - **Online Learning**: Incrementally update HexMHA weights after each processing
+- **Learning Closed Loop**: Train MHA to output valid UTF-8 strings
 - **Event-Driven**: Supports `on_input`, `on_output`, `on_learn` hooks
 - **Dual Mode**: Interactive (CLI) and Service (TCP) modes
+
+### Learning Closed Loop
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                   Online Learning Closed Loop                │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│   User Input ──→ Token Module ──→ HexMHA ──→ Try Decode     │
+│                  (str→hex)     (process)   (hex→str)        │
+│                                        │                     │
+│                          ┌─────────────┴─────────────┐      │
+│                          ↓                           ↓      │
+│                    ✅ Decode Success              ❌ Decode Fail│
+│                    Print String                  Record Fail  │
+│                          │                           │      │
+│                          ↓                           ↓      │
+│                    Reinforce Output            Target=Input  │
+│                    (keep valid)               (learn to    │
+│                                                output input) │
+│                          │                           │      │
+│                          └─────────────┬─────────────┘      │
+│                                      ↓                     │
+│                               Update Parameters             │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Learning Goal**: Make MHA output hex that can successfully decode to UTF-8 strings.
+
+- Initial (random weights): MHA outputs garbage, cannot decode
+- Target: MHA outputs valid UTF-8 hex, correctly decoding to original text
 
 ### Quick Start
 
@@ -253,9 +286,12 @@ python hex_agent.py --mode service --port 8765
 | Command | Description |
 |---------|-------------|
 | `:learn on/off` | Enable/disable online learning |
+| `:mode print` | Output mode: hex to string (default) |
+| `:mode echo` | Output mode: direct hex |
 | `:save` | Save state to file |
-| `:stats` | Show statistics |
+| `:stats` | Show statistics (incl. learning success rate) |
 | `:reset` | Reset MHA cache |
+| `:test` | Run test cases |
 | `:quit` | Exit |
 
 ## Project Documentation Index
@@ -268,6 +304,13 @@ python hex_agent.py --mode service --port 8765
 | hex_mha_module_v2.py | Multi-Head Attention Implementation | [Module Reference](#3-hexmha-module-hex_mha_module_v2py) |
 
 ## Changelog
+
+### v0.2.0 (2026-05-12)
+
+- Refactored HexAgent with learning closed loop
+- Core: Train MHA to output valid UTF-8 strings
+- Success/fail sample recording, dynamic learning strategy
+- New commands: `:mode`, `:test`
 
 ### v0.1.0 (2026-05-12)
 

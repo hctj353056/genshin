@@ -1,0 +1,5 @@
+2026-05-12 02:16:50 | INFO | 输入: 你好
+2026-05-12 02:16:50 | INFO | hex: E4BDA0E5A5BD
+2026-05-12 02:16:50 | INFO | MHA输出: E90AAA04313F
+2026-05-12 02:16:50 | WARNING | 输出无效: 'utf-8' codec can't decode byte 0xe9 in position 0: invalid continuation byte
+2026-05-12 02:16:50 | INFO | 学习统计: 成功0/失败1 (0.0%)
