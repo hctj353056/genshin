@@ -52,7 +52,7 @@ class HexPipeline:
         )
         
         # 初始化键盘
-        self.keyboard = HexKeyboard(max_length=mha_seq_len * 8)
+        self.keyboard = HexKeyboard(max_buffer=mha_seq_len * 8)
         
         # 输出配置
         self.output_dir = output_dir
