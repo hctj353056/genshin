@@ -145,7 +145,7 @@ class HexAgent:
     """
     
     def __init__(self,
-                 mha_seq_len: int = 64,
+                 mha_seq_len: int = 4096,
                  mha_dim: int = 64,
                  mha_heads: int = 4,
                  mha_embed_dim: int = 64,
