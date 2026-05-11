@@ -23,6 +23,7 @@ from hex_keyboard import HexKeyboard, KeyAction
 from hex_mha_module_v2 import HexMHA, layer_norm, softmax, cross_entropy_loss, HEX_TO_IDX, IDX_TO_HEX
 from 词元模块_1778459060672_3xq9 import str_to_hex, hex_to_str
 from 解析模块_1778459060679_lsxn import file_to_hex, hex_to_file
+from hex_category import HexCategorySystem
 
 
 class AgentState(Enum):
@@ -172,6 +173,10 @@ class HexAgent:
         self.learner = OnlineLearner(self.mha, lr=learning_rate) if enable_online_learning else None
         self.enable_learning = enable_online_learning
         
+        # 范畴系统（用于语言规则提取）
+        self.category_system = HexCategorySystem()
+        self.conversation_history: List[str] = []  # 对话历史
+        
         # 状态
         self.state = AgentState.IDLE
         self.state_dir = state_dir
@@ -295,7 +300,7 @@ class HexAgent:
         """
         处理输入
         
-        流程：文本 → hex → HexMHA → 尝试转字符串 → 输出(X,Y) → 学习
+        流程：文本 → hex → 范畴系统生成回复 → HexMHA处理 → 尝试转字符串 → 输出
         
         Args:
             input_text: 用户输入文本
@@ -309,6 +314,7 @@ class HexAgent:
             'success': False,
             'input_text': input_text,
             'input_hex': '',
+            'category_output': '',
             'mha_output': '',
             'is_valid': False,
             'output_text': '',
@@ -323,48 +329,46 @@ class HexAgent:
             self.logger.info(f"输入: {input_text}")
             self.logger.info(f"hex: {input_hex}")
             
-            # 2. HexMHA处理
-            mha_output = self.mha.forward(input_hex, reset_cache=True)
+            # 2. 范畴系统：学习输入 + 生成回复（中文屋子核心）
+            # 学习历史输入到范畴系统
+            self.conversation_history.append(input_hex)
+            self.category_system.learn_from_input(input_hex, self.conversation_history[:-1])
+            
+            # 使用范畴系统生成回复（不是复制输入，而是找关系）
+            category_output = self.category_system.generate_response(input_hex, mode="chain")
+            result['category_output'] = category_output
+            self.logger.info(f"范畴输出: {category_output}")
+            
+            # 3. HexMHA处理范畴输出
+            mha_output = self.mha.forward(category_output, reset_cache=True)
             result['mha_output'] = mha_output
             self.logger.info(f"MHA输出: {mha_output}")
             
-            # 3. 尝试转为字符串（核心步骤）
+            # 4. 尝试转为字符串
             is_valid, decoded = self._try_decode(mha_output)
             result['is_valid'] = is_valid
             
-            # 4. 根据模式输出
+            # 5. 根据模式输出
             if output_mode == KeyAction.PRINT:
                 if is_valid:
                     result['success'] = True
                     result['output_text'] = decoded
-                    result['output_hex'] = input_hex  # 学习目标是输入hex
                     print(f"\n{'='*50}")
                     print(f"🎯 输出(字符串): {decoded}")
                     print(f"{'='*50}")
                     self.logger.info(f"输出成功: {decoded}")
                 else:
-                    result['output_hex'] = mha_output
                     print(f"\n{'='*50}")
                     print(f"⚠️  MHA输出无法转为字符串")
                     print(f"   原始hex: {mha_output}")
                     print(f"   错误: {decoded}")
-                    print(f"   将学习调整为有效输出...")
                     print(f"{'='*50}")
                     self.logger.warning(f"输出无效: {decoded}")
             
             elif output_mode == KeyAction.ECHO:
-                # 直接输出hex
                 result['success'] = True
                 result['output_hex'] = mha_output
                 print(f"\n[hex] {mha_output}")
-            
-            # 5. 记录经验并学习
-            if self.learner and self.enable_learning:
-                self.state = AgentState.LEARNING
-                target = self.learner.record(input_hex, mha_output, is_valid)
-                result['target_hex'] = target
-                stats = self.learner.get_stats()
-                self.logger.info(f"学习统计: 成功{stats['success']}/失败{stats['fail']} ({stats['rate']:.1%})")
             
             self.processed_count += 1
             self.state = AgentState.IDLE
