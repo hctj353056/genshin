@@ -1,363 +1,461 @@
 # hex_category.py
-# 范畴论语言处理模块
+# 范畴论语言处理模块 - 中文屋子实现
 # 
-# 核心概念：
-# - 对象（Object）：语言单元（词、词组、句子）的hex表示
-# - 态射（Morphism）：单元间的关系（修饰、因果、时序）
-# - 范畴（Category）：对象+态射+组合律+恒等态射
-# - 函子（Functor）：范畴间的结构保持映射
-# - 自然变换（Natural Transformation）：函子间的映射
+# 核心思想：
+# - 不需要"理解"语言
+# - 从输入中提取统计模式
+# - 用模式规则生成输出
 #
-# 图结构：
-# - 节点：语言单元（对象）
-# - 边：关系（态射）
-# - 路径：复合态射
+# 流程：
+# 1. 输入分割为字符列表
+# 2. 按长度分组，计算相似度
+# 3. 提取句式模板（相同部分）和共类（差异部分）
+# 4. 建立输入→输出范畴映射
+# 5. 生成时选取符合规则的句式模板
 
-import numpy as np
-from typing import Dict, List, Tuple, Set, Optional, Callable
-from dataclasses import dataclass, field
+import os
+import json
+from typing import Dict, List, Set, Tuple, Optional
 from collections import defaultdict
 from 词元模块_1778459060672_3xq9 import str_to_hex, hex_to_str
 
-HEX_CHARS = '0123456789ABCDEF'
+# ============ 核心数据结构 ============
+
+class PhrasePattern:
+    """
+    句式模板：记录句子的结构模式
+    
+    例如：
+    - 句式: "你___"（你+任意字符）
+    - 共类: {"好", "叫", "好"}
+    """
+    def __init__(self, template: str, variants: Set[str]):
+        self.template = template      # 句式模板（用_表示变化部分）
+        self.variants = variants      # 共类变体集合
+        self.count = 0               # 出现次数
+        
+    def generate(self, choice: str = None) -> str:
+        """根据模板生成句子"""
+        if choice and choice in self.variants:
+            parts = self.template.split('_')
+            result = parts[0] + choice + (parts[1] if len(parts) > 1 else '')
+            return result
+        elif self.variants:
+            return self.template.replace('_', list(self.variants)[0])
+        return self.template.replace('_', '')
+    
+    def __repr__(self):
+        return f"Pattern({self.template}, 共类={len(self.variants)})"
 
 
-@dataclass
-class Morphism:
+class SentenceCategory:
     """
-    态射：对象之间的关系
+    句子范畴：包含句式模板和共类
     
-    source -> target 表示 source 经过某种关系 指向 target
+    范畴 = 对象（具体句子）+ 态射（句式模板关系）
     """
-    source: str      # 源对象（hex字符串）
-    target: str      # 目标对象（hex字符串）
-    relation: str    # 关系类型（hex编码）
-    weight: float = 1.0  # 权重/置信度
-    
-    def __hash__(self):
-        return hash((self.source, self.target, self.relation))
-
-
-class Category:
-    """
-    范畴：语言单元的范畴
-    
-    包含：
-    - 对象集合（language_units）
-    - 态射集合（morphism_graph）
-    - 组合律：态射可以组合
-    - 恒等态射：每个对象的自映射
-    """
-    
-    def __init__(self, name: str = "Language"):
-        self.name = name
-        self.objects: Set[str] = set()      # 对象集合（hex字符串）
-        self.morphisms: List[Morphism] = []  # 态射列表
-        self.morphism_index: Dict[str, List[Morphism]] = defaultdict(list)  # 按源对象索引
+    def __init__(self, length: int):
+        self.length = length
+        self.exact_sentences: Set[str] = set()      # 完全相同的句子
+        self.patterns: List[PhrasePattern] = []      # 句式模板列表
         
-    def add_object(self, obj: str):
-        """添加对象"""
-        self.objects.add(obj.upper())
+    def add_sentence(self, sentence: str):
+        """添加句子"""
+        self.exact_sentences.add(sentence)
         
-    def add_morphism(self, source: str, target: str, relation: str = "NEXT"):
-        """添加态射"""
-        m = Morphism(source.upper(), target.upper(), relation.upper())
-        self.morphisms.append(m)
-        self.morphism_index[source.upper()].append(m)
-        # 确保对象存在
-        self.add_object(source)
-        self.add_object(target)
-        return m
-    
-    def get_morphisms_from(self, source: str) -> List[Morphism]:
-        """获取从source出发的所有态射"""
-        return self.morphism_index.get(source.upper(), [])
-    
-    def get_morphisms_to(self, target: str) -> List[Morphism]:
-        """获取指向target的所有态射"""
-        return [m for m in self.morphisms if m.target == target.upper()]
-    
-    def find_path(self, source: str, target: str, max_depth: int = 3) -> List[List[Morphism]]:
-        """查找从source到target的所有路径（复合态射）"""
-        source = source.upper()
-        target = target.upper()
+    def extract_patterns(self):
+        """从句子集合中提取句式模板"""
+        if len(self.exact_sentences) < 2:
+            return []
         
-        paths = []
+        sentences = list(self.exact_sentences)
+        patterns_found = []
         
-        def dfs(current: str, path: List[Morphism], depth: int):
-            if depth > max_depth:
-                return
-            if current == target:
-                paths.append(path.copy())
-                return
+        # 按位置逐字符分析
+        for pos in range(self.length):
+            chars_at_pos = [s[pos] for s in sentences if len(s) > pos]
+            unique_chars = set(chars_at_pos)
             
-            for m in self.get_morphisms_from(current):
-                if m not in path:  # 避免循环
-                    path.append(m)
-                    dfs(m.target, path, depth + 1)
-                    path.pop()
+            if len(unique_chars) > 1:
+                # 有变化，记录这个位置的共类
+                template = '_' * self.length
+                for i, s in enumerate(sentences):
+                    template_list = list(template)
+                    template_list[pos] = s[pos] if len(s) > pos else ''
+                    sentences[i] = ''.join(template_list)
         
-        dfs(source, [], 0)
-        return paths
+        # 简化：找到最大公共子串
+        patterns = self._find_common_patterns(sentences)
+        return patterns
     
-    def extract_common_patterns(self, min_occurrence: int = 2) -> Dict[str, int]:
-        """
-        提取共性模式（极限/余极限概念）
+    def _find_common_patterns(self, sentences: List[str]) -> List[PhrasePattern]:
+        """找公共模式"""
+        if not sentences:
+            return []
         
-        找出发生多次的子序列模式
-        """
-        patterns = defaultdict(int)
+        patterns = []
+        first = sentences[0]
         
-        # 从态射序列中提取模式
-        for m in self.morphisms:
-            # 简单模式：源对象+关系
-            pattern = f"{m.source}:{m.relation}"
-            patterns[pattern] += 1
+        # 找连续相同的部分
+        i = 0
+        while i < len(first):
+            # 跳过相同部分
+            while i < len(first) and all(s[i] == first[i] for s in sentences):
+                i += 1
+            
+            if i >= len(first):
+                break
+            
+            # 记录变化的起始
+            var_start = i
+            
+            # 跳过变化部分
+            while i < len(first) and not all(s[i] == first[i] if i < len(s) else True for s in sentences):
+                i += 1
+            
+            var_end = i
+            variants = {s[var_start:var_end] if var_end <= len(s) else '' for s in sentences}
+            
+            if len(variants) > 1 and len(first[:var_start]) > 0:
+                template = first[:var_start] + '_' + first[var_end:]
+                patterns.append(PhrasePattern(template, variants))
         
-        # 过滤低频模式
-        return {k: v for k, v in patterns.items() if v >= min_occurrence}
-    
-    def compose(self, m1: Morphism, m2: Morphism) -> Optional[Morphism]:
-        """
-        态射组合：如果 m1.target == m2.source，则可以组合
-        
-        组合律：(f ∘ g) ∘ h = f ∘ (g ∘ h)
-        """
-        if m1.target != m2.source:
-            return None
-        
-        return Morphism(
-            source=m1.source,
-            target=m2.target,
-            relation=f"{m1.relation}+{m2.relation}",
-            weight=m1.weight * m2.weight
-        )
+        return patterns
 
+
+# ============ 范畴系统核心 ============
 
 class HexCategorySystem:
     """
     基于范畴论的Hex语言处理系统
     
     架构：
-    输入hex → 解析为对象 → 在范畴中查找态射 → 通过函子映射 → 输出
+    输入 → 字符列表 → 按长度分组 → 提取句式+共类 → 建立范畴映射 → 生成输出
+    
+    核心概念：
+    - 对象：具体的句子（字符串）
+    - 态射：句式模板（相同结构的关系）
+    - 范畴：输入集合 + 输出集合 + 映射关系
+    - 函子：保持结构的映射（输入范畴→输出范畴）
     """
     
-    def __init__(self, embed_dim: int = 64):
-        self.embed_dim = embed_dim
+    def __init__(self, data_dir: str = './category_data'):
+        self.data_dir = data_dir
+        os.makedirs(data_dir, exist_ok=True)
         
-        # 核心范畴：语言范畴
-        self.language_category = Category("Language")
+        # 用户输入集合（按长度索引）
+        self.user_inputs: Dict[int, Set[str]] = defaultdict(set)
         
-        # 对象嵌入：将hex字符串映射为向量
-        self.object_embeddings: Dict[str, np.ndarray] = {}
+        # 程序输出集合（按长度索引）
+        self.program_outputs: Dict[int, Set[str]] = defaultdict(set)
         
-        # 态射嵌入：将关系类型映射为向量
-        self.morphism_embeddings: Dict[str, np.ndarray] = {}
+        # 范畴映射：用户输入类型 → 程序输出类型
+        self.category_morphisms: Dict[str, str] = {}
         
-        # 统计信息
-        self.total_inputs = 0
-        self.total_outputs = 0
+        # 句式模板集合
+        self.user_patterns: Dict[int, List[PhrasePattern]] = defaultdict(list)
+        self.output_patterns: Dict[int, List[PhrasePattern]] = defaultdict(list)
         
-    def hex_to_object(self, hex_str: str) -> str:
-        """将hex字符串规范化为对象"""
-        return hex_str.upper().strip()
+        # 加载已有数据
+        self._load_data()
+        
+    def _get_data_path(self, name: str) -> str:
+        return os.path.join(self.data_dir, f'{name}.json')
     
-    def learn_from_input(self, hex_input: str, context: List[str] = None):
-        """
-        从输入学习：提取对象和态射
+    def _load_data(self):
+        """加载已有数据"""
+        user_path = self._get_data_path('user_inputs')
+        output_path = self._get_data_path('program_outputs')
+        morphism_path = self._get_data_path('morphisms')
         
-        上下文中的相邻元素形成态射关系
-        """
-        hex_input = hex_input.upper()
-        self.language_category.add_object(hex_input)
-        self.total_inputs += 1
+        if os.path.exists(user_path):
+            data = json.load(open(user_path, 'r', encoding='utf-8'))
+            for length, sentences in data.items():
+                self.user_inputs[int(length)] = set(sentences)
         
-        # 如果有上下文，提取上下文中的关系
-        if context:
-            # 上下文中前一个元素 -> 当前输入
-            if len(context) > 0:
-                prev = context[-1].upper()
-                self.language_category.add_morphism(prev, hex_input, "CONTEXT")
-        
-        # 从输入本身提取模式（自关联）
-        # 相邻的hex字符形成关系
-        for i in range(len(hex_input) - 1):
-            source = hex_input[i]
-            target = hex_input[i + 1]
-            self.language_category.add_morphism(source, target, "ADJACENT")
+        if os.path.exists(output_path):
+            data = json.load(open(output_path, 'r', encoding='utf-8'))
+            for length, sentences in data.items():
+                self.program_outputs[int(length)] = set(sentences)
+                
+        if os.path.exists(morphism_path):
+            self.category_morphisms = json.load(open(morphism_path, 'r', encoding='utf-8'))
     
-    def learn_from_conversation(self, user_input: str, agent_response: str):
-        """
-        从对话中学习：用户输入 → Agent回复
+    def _save_data(self):
+        """保存数据"""
+        # 保存用户输入
+        user_data = {k: list(v) for k, v in self.user_inputs.items()}
+        json.dump(user_data, open(self._get_data_path('user_inputs'), 'w', encoding='utf-8'), ensure_ascii=False)
         
-        这形成一个态射：user_input -> agent_response
-        """
-        # 统一转为hex
-        user_hex = str_to_hex(user_input).upper().replace(' ', '')
-        response_hex = str_to_hex(agent_response).upper().replace(' ', '')
+        # 保存程序输出
+        output_data = {k: list(v) for k, v in self.program_outputs.items()}
+        json.dump(output_data, open(self._get_data_path('program_outputs'), 'w', encoding='utf-8'), ensure_ascii=False)
         
-        self.language_category.add_object(user_hex)
-        self.language_category.add_object(response_hex)
-        
-        # 对话关系
-        self.language_category.add_morphism(user_hex, response_hex, "RESPONSE")
-        
-        # 也学习输入内部的模式
-        self.learn_from_input(user_hex)
-        self.learn_from_input(response_hex)
-        
-        print(f"学习对话: {user_input[:20]}... -> {agent_response[:20]}...")
+        # 保存范畴映射
+        json.dump(self.category_morphisms, open(self._get_data_path('morphisms'), 'w', encoding='utf-8'), ensure_ascii=False)
     
-    def generate_response(self, hex_input: str, mode: str = "chain") -> str:
+    def learn_from_user_input(self, text: str):
         """
-        根据输入生成回复
+        学习用户输入
+        
+        1. 将字符串转为字符列表
+        2. 按长度添加到集合
+        3. 提取句式模板
+        """
+        if not text:
+            return
+            
+        # 添加到用户输入集合
+        self.user_inputs[len(text)].add(text)
+        
+        # 提取句式
+        self._extract_patterns(len(text), is_user=True)
+        
+        # 保存
+        self._save_data()
+        
+        print(f"学习用户输入: '{text}' (长度={len(text)})")
+    
+    def learn_from_program_output(self, text: str):
+        """学习程序输出"""
+        if not text:
+            return
+            
+        self.program_outputs[len(text)].add(text)
+        self._extract_patterns(len(text), is_user=False)
+        self._save_data()
+        
+        print(f"学习程序输出: '{text}' (长度={len(text)})")
+    
+    def add_morphism(self, user_input: str, program_output: str):
+        """添加范畴映射：用户输入类型 → 程序输出"""
+        self.category_morphisms[user_input] = program_output
+        self._save_data()
+    
+    def _extract_patterns(self, length: int, is_user: bool):
+        """从指定长度的句子中提取句式模板"""
+        source = self.user_inputs if is_user else self.program_outputs
+        patterns_dict = self.user_patterns if is_user else self.output_patterns
+        
+        sentences = list(source[length])
+        if len(sentences) < 2:
+            return
+        
+        # 创建范畴
+        category = SentenceCategory(length)
+        for s in sentences:
+            category.add_sentence(s)
+        
+        # 提取模式
+        patterns = category.extract_patterns()
+        patterns_dict[length] = patterns
+        
+        print(f"  提取到 {len(patterns)} 个句式模板")
+    
+    def _split_to_chars(self, text: str) -> List[str]:
+        """将字符串分割为字符列表"""
+        return list(text)
+    
+    def _calculate_similarity(self, list1: List[str], list2: List[str]) -> Tuple[int, int]:
+        """
+        计算两个列表的相似度
+        
+        返回：(相同字符数, 不同字符位置数)
+        """
+        if len(list1) != len(list2):
+            return 0, max(len(list1), len(list2))
+        
+        same = sum(1 for a, b in zip(list1, list2) if a == b)
+        diff = len(list1) - same
+        return same, diff
+    
+    def _find_common_subsequence(self, list1: List[str], list2: List[str]) -> Tuple[List[str], int, int]:
+        """
+        找两个列表的公共子序列
+        
+        返回：(公共部分, 在list1中的起始位置, 在list2中的起始位置)
+        """
+        max_len = 0
+        max_start1, max_start2 = 0, 0
+        
+        for i in range(len(list1)):
+            for j in range(len(list2)):
+                # 找从(i,j)开始的最长公共前缀
+                k = 0
+                while (i+k < len(list1) and j+k < len(list2) and 
+                       list1[i+k] == list2[j+k]):
+                    k += 1
+                
+                if k > max_len:
+                    max_len = k
+                    max_start1, max_start2 = i, j
+        
+        common = list1[max_start1:max_start1+max_len]
+        return common, max_start1, max_start2
+    
+    def generate_response(self, user_input: str, mode: str = "template") -> str:
+        """
+        生成回复
         
         mode:
-        - "chain": 沿着态射链生成
-        - "reverse": 查找反向关系
-        - "pattern": 基于模式匹配
+        - "template": 使用句式模板生成
+        - "similar": 找相似输入的输出
+        - "morphism": 使用范畴映射
         """
-        hex_input = hex_input.upper()
-        
-        if mode == "chain":
-            return self._generate_by_chain(hex_input)
-        elif mode == "reverse":
-            return self._generate_by_reverse(hex_input)
-        elif mode == "pattern":
-            return self._generate_by_pattern(hex_input)
+        if mode == "morphism":
+            return self._generate_by_morphism(user_input)
+        elif mode == "similar":
+            return self._generate_by_similar(user_input)
         else:
-            return self._generate_by_chain(hex_input)
+            return self._generate_by_template(user_input)
     
-    def _generate_by_chain(self, hex_input: str) -> str:
-        """
-        链式生成：沿着态射链继续走下去
+    def _generate_by_morphism(self, user_input: str) -> str:
+        """使用范畴映射生成"""
+        # 查找相同或相似的输入
+        for stored_input, stored_output in self.category_morphisms.items():
+            if stored_input == user_input:
+                return stored_output
+            
+            # 检查是否满足范畴映射规则
+            chars1 = self._split_to_chars(user_input)
+            chars2 = self._split_to_chars(stored_input)
+            
+            if len(chars1) == len(chars2):
+                same, diff = self._calculate_similarity(chars1, chars2)
+                if same >= len(chars1) * 0.7:  # 70%相似
+                    # 替换差异部分
+                    output_chars = list(stored_output)
+                    for i, (c1, c2) in enumerate(zip(chars1, chars2)):
+                        if c1 != c2:
+                            # 找到输出中对应位置的字符
+                            pass  # 简化处理
+                    return stored_output
         
-        如果有 user -> response 的态射，就找类似的输入的输出
-        """
-        # 查找所有以hex_input为源的态射
-        morphisms = self.language_category.get_morphisms_from(hex_input)
-        
-        # 优先找RESPONSE类型的态射
-        response_morphisms = [m for m in morphisms if m.relation == "RESPONSE"]
-        
-        if response_morphisms:
-            # 返回权重最高的回复
-            best = max(response_morphisms, key=lambda m: m.weight)
-            return best.target
-        
-        # 如果没有直接回复，尝试从模式中推断
-        if morphisms:
-            # 组合多个态射生成新输出
-            path = morphisms[0]
-            # 沿着链继续走
-            for _ in range(3):
-                next_m = self.language_category.get_morphisms_from(path.target)
-                if next_m:
-                    path = next_m[0]
-                else:
-                    break
-            return path.target
-        
-        # 如果完全没找到，返回输入（复读）
-        return hex_input
+        # 没找到映射，返回输入（复读）
+        return user_input
     
-    def _generate_by_reverse(self, hex_input: str) -> str:
-        """反向生成：查找指向输入的态射"""
-        morphisms = self.language_category.get_morphisms_to(hex_input)
+    def _generate_by_similar(self, user_input: str) -> str:
+        """找相似输入的输出（改进版：使用范畴映射）"""
+        # 先检查是否有直接映射
+        if user_input in self.category_morphisms:
+            return self.category_morphisms[user_input]
         
-        if morphisms:
-            # 随机选择一个
-            m = morphisms[np.random.randint(0, len(morphisms))]
-            return m.source
+        # 找最相似的已知输入
+        best_similarity = 0
+        best_match = None
         
-        return hex_input
+        for known_input in self.category_morphisms.keys():
+            # 计算相似度
+            similarity = self._calculate_text_similarity(user_input, known_input)
+            
+            if similarity > best_similarity and similarity >= 0.3:
+                best_similarity = similarity
+                best_match = known_input
+        
+        if best_match:
+            return self.category_morphisms[best_match]
+        
+        return user_input
     
-    def _generate_by_pattern(self, hex_input: str) -> str:
+    def _calculate_text_similarity(self, text1: str, text2: str) -> float:
         """
-        基于模式生成：分析输入中的模式，生成匹配的回复
+        计算两个文本的相似度
         
-        使用范畴论的极限概念：找到共同的模式
+        使用多种相似度指标：
+        1. 公共前缀比例
+        2. 公共字符比例
+        3. 长度差异
         """
-        # 提取输入中的模式
-        patterns = []
-        for i in range(len(hex_input) - 1):
-            pattern = f"{hex_input[i]}:{hex_input[i+1]}"
-            patterns.append(pattern)
+        # 1. 公共前缀
+        prefix_len = 0
+        for c1, c2 in zip(text1, text2):
+            if c1 == c2:
+                prefix_len += 1
+            else:
+                break
+        prefix_ratio = prefix_len / max(len(text1), len(text2))
         
-        # 查找有相同模式的输出
-        common_patterns = self.language_category.extract_common_patterns()
+        # 2. 公共字符集合
+        chars1 = set(text1)
+        chars2 = set(text2)
+        intersection = len(chars1 & chars2)
+        union = len(chars1 | chars2)
+        jaccard = intersection / union if union > 0 else 0
         
-        # 构建基于模式的回复
-        response = ""
-        for p in patterns:
-            if p in common_patterns:
-                # 找到这个模式对应的对象
-                obj = p.split(":")[1]  # 目标对象
-                response += obj
+        # 3. 长度差异惩罚
+        len_ratio = min(len(text1), len(text2)) / max(len(text1), len(text2))
         
-        return response if response else hex_input
+        # 综合相似度
+        similarity = (prefix_ratio * 0.5 + jaccard * 0.3 + len_ratio * 0.2)
+        return similarity
     
-    def get_category_stats(self) -> dict:
-        """获取范畴统计"""
+    def _generate_by_template(self, user_input: str) -> str:
+        """使用句式模板生成"""
+        length = len(user_input)
+        
+        # 找相同长度的句式模板
+        patterns = self.user_patterns.get(length, [])
+        
+        if not patterns:
+            # 没有模板，返回输入
+            return user_input
+        
+        # 尝试匹配模板并生成
+        for pattern in patterns:
+            # 简化：直接返回模板的一个变体
+            if pattern.variants:
+                return pattern.generate()
+        
+        return user_input
+    
+    def get_stats(self) -> dict:
+        """获取统计信息"""
+        total_inputs = sum(len(v) for v in self.user_inputs.values())
+        total_outputs = sum(len(v) for v in self.program_outputs.values())
+        total_patterns = sum(len(v) for v in self.user_patterns.values())
+        
         return {
-            'objects': len(self.language_category.objects),
-            'morphisms': len(self.language_category.morphisms),
-            'inputs': self.total_inputs,
-            'outputs': self.total_outputs,
-            'patterns': len(self.language_category.extract_common_patterns())
+            'user_inputs': total_inputs,
+            'user_lengths': len(self.user_inputs),
+            'program_outputs': total_outputs,
+            'output_lengths': len(self.program_outputs),
+            'morphisms': len(self.category_morphisms),
+            'patterns': total_patterns
         }
 
 
 # ============ 测试 ============
+
 if __name__ == "__main__":
-    cs = HexCategorySystem()
+    cs = HexCategorySystem(data_dir='./test_category')
     
     print("=" * 50)
-    print("范畴论语言处理测试")
+    print("范畴系统测试")
     print("=" * 50)
     
-    # 学习一些对话
-    conversations = [
-        ("你好", "你好"),
-        ("你叫什么", "我是HexAgent"),
-        ("今天天气", "天气不错"),
-        ("你好", "Hello"),
-        ("你好", "嗨"),
-    ]
+    # 学习用户输入
+    print("\n1. 学习用户输入:")
+    user_inputs = ["你好", "您好", "你叫", "你叫什么", "你好啊", "你好世界", "早上好"]
+    for inp in user_inputs:
+        cs.learn_from_user_input(inp)
     
-    for user, agent in conversations:
-        cs.learn_from_conversation(user, agent)
+    # 学习程序输出
+    print("\n2. 学习程序输出:")
+    outputs = ["你好", "你好", "我是", "我是HexAgent", "你好", "你好", "天气不错"]
+    for outp in outputs:
+        cs.learn_from_program_output(outp)
     
-    # 打印统计
-    stats = cs.get_category_stats()
-    print(f"\n范畴统计: {stats}")
+    # 建立映射
+    print("\n3. 建立范畴映射:")
+    for inp, outp in zip(user_inputs, outputs):
+        cs.add_morphism(inp, outp)
     
-    # 打印对象
-    print(f"\n对象数量: {len(cs.language_category.objects)}")
-    print(f"态射数量: {len(cs.language_category.morphisms)}")
-    
-    # 打印共性模式
-    patterns = cs.language_category.extract_common_patterns()
-    print(f"\n共性模式: {patterns}")
+    # 统计
+    print("\n统计:", cs.get_stats())
     
     # 测试生成
-    print("\n" + "=" * 50)
-    print("生成测试")
-    print("=" * 50)
-    
-    test_inputs = ["你好", "你叫什么", "今天天气", "未知输入"]
-    
+    print("\n4. 测试生成:")
+    test_inputs = ["你好", "您好", "你叫什么", "未知输入"]
     for inp in test_inputs:
-        inp_hex = str_to_hex(inp).upper().replace(' ', '')
-        
-        # 学习这个输入
-        cs.learn_from_input(inp_hex)
-        
-        # 生成回复
-        for mode in ["chain", "reverse", "pattern"]:
-            response_hex = cs.generate_response(inp_hex, mode=mode)
-            try:
-                response = bytes.fromhex(response_hex).decode('utf-8')
-            except:
-                response = response_hex
-            print(f"输入: {inp} ({mode}) -> {response}")
+        response = cs.generate_response(inp, mode="similar")
+        print(f"  输入: {inp} -> 输出: {response}")
