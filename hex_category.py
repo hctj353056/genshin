@@ -64,60 +64,58 @@ class SentenceCategory:
         self.exact_sentences.add(sentence)
         
     def extract_patterns(self):
-        """从句子集合中提取句式模板"""
+        """
+        从句子集合中提取句式模板
+        
+        核心算法：
+        1. 找公共前缀（句式开头）
+        2. 找公共后缀（句式结尾）
+        3. 中间部分为共类
+        """
         if len(self.exact_sentences) < 2:
             return []
         
         sentences = list(self.exact_sentences)
-        patterns_found = []
-        
-        # 按位置逐字符分析
-        for pos in range(self.length):
-            chars_at_pos = [s[pos] for s in sentences if len(s) > pos]
-            unique_chars = set(chars_at_pos)
-            
-            if len(unique_chars) > 1:
-                # 有变化，记录这个位置的共类
-                template = '_' * self.length
-                for i, s in enumerate(sentences):
-                    template_list = list(template)
-                    template_list[pos] = s[pos] if len(s) > pos else ''
-                    sentences[i] = ''.join(template_list)
-        
-        # 简化：找到最大公共子串
-        patterns = self._find_common_patterns(sentences)
-        return patterns
-    
-    def _find_common_patterns(self, sentences: List[str]) -> List[PhrasePattern]:
-        """找公共模式"""
-        if not sentences:
-            return []
-        
-        patterns = []
         first = sentences[0]
+        patterns = []
         
-        # 找连续相同的部分
-        i = 0
-        while i < len(first):
-            # 跳过相同部分
-            while i < len(first) and all(s[i] == first[i] for s in sentences):
-                i += 1
-            
-            if i >= len(first):
+        # 找公共前缀
+        prefix_len = 0
+        while prefix_len < len(first):
+            char = first[prefix_len]
+            if all(s[prefix_len] == char for s in sentences if len(s) > prefix_len):
+                prefix_len += 1
+            else:
                 break
+        
+        # 找公共后缀
+        suffix_len = 0
+        while suffix_len < len(first) - prefix_len:
+            char = first[-(suffix_len + 1)]
+            if all(s[-(suffix_len + 1)] == char for s in sentences if len(s) > suffix_len):
+                suffix_len += 1
+            else:
+                break
+        
+        # 中间部分为共类
+        if prefix_len + suffix_len < len(first):
+            template_prefix = first[:prefix_len]
+            template_suffix = first[-suffix_len:] if suffix_len > 0 else ''
+            template_middle = '_'  # 用_表示共类位置
             
-            # 记录变化的起始
-            var_start = i
+            if suffix_len > 0:
+                template = template_prefix + template_middle + template_suffix
+            else:
+                template = template_prefix + template_middle
             
-            # 跳过变化部分
-            while i < len(first) and not all(s[i] == first[i] if i < len(s) else True for s in sentences):
-                i += 1
+            # 提取共类
+            variants = set()
+            for s in sentences:
+                if len(s) >= prefix_len + suffix_len:
+                    middle = s[prefix_len:len(s)-suffix_len] if suffix_len > 0 else s[prefix_len:]
+                    variants.add(middle)
             
-            var_end = i
-            variants = {s[var_start:var_end] if var_end <= len(s) else '' for s in sentences}
-            
-            if len(variants) > 1 and len(first[:var_start]) > 0:
-                template = first[:var_start] + '_' + first[var_end:]
+            if len(variants) > 1:
                 patterns.append(PhrasePattern(template, variants))
         
         return patterns
@@ -293,19 +291,19 @@ class HexCategorySystem:
         common = list1[max_start1:max_start1+max_len]
         return common, max_start1, max_start2
     
-    def generate_response(self, user_input: str, mode: str = "template") -> str:
+    def generate_response(self, user_input: str, mode: str = "similar") -> str:
         """
         生成回复
         
         mode:
-        - "template": 使用句式模板生成
-        - "similar": 找相似输入的输出
+        - "similar": 找相似输入的输出（默认，优先使用范畴映射）
         - "morphism": 使用范畴映射
+        - "template": 使用句式模板生成
         """
-        if mode == "morphism":
-            return self._generate_by_morphism(user_input)
-        elif mode == "similar":
+        if mode == "similar":
             return self._generate_by_similar(user_input)
+        elif mode == "morphism":
+            return self._generate_by_morphism(user_input)
         else:
             return self._generate_by_template(user_input)
     
