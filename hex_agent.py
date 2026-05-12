@@ -109,8 +109,9 @@ class HexAgent:
         try:
             self.logger.info(f"输入: {input_text}")
             
-            # 1. 范畴系统学习用户输入
-            self.category_system.learn_from_user_input(input_text)
+            # 使用自主学习方法
+            # 1. 自动学习 + 分析 + 推断
+            inferred = self.category_system.auto_learn(input_text)
             
             # 2. 范畴系统生成回复
             response = self.category_system.generate_response(input_text, mode="similar")

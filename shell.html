@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deepseek V4 Pro God</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* 弹窗容器 */
+        .shell-window {
+            width: 900px;
+            max-width: 95vw;
+            height: 700px;
+            background: #0f0f23;
+            border-radius: 16px;
+            box-shadow: 0 25px 80px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            border: 1px solid rgba(100, 255, 218, 0.2);
+        }
+
+        /* 标题栏 */
+        .shell-titlebar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 20px;
+            background: linear-gradient(90deg, rgba(0, 212, 255, 0.15), rgba(138, 43, 226, 0.15));
+            border-bottom: 1px solid rgba(100, 255, 218, 0.2);
+            -webkit-app-region: drag;
+        }
+
+        .shell-title {
+            font-size: 16px;
+            font-weight: 600;
+            background: linear-gradient(90deg, #00d4ff, #8a2be2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .shell-controls {
+            display: flex;
+            gap: 8px;
+            -webkit-app-region: no-drag;
+        }
+
+        .shell-btn {
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .shell-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: scale(1.05);
+        }
+
+        /* 主容器 */
+        .shell-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        /* 思考面板 */
+        .think-panel {
+            width: 280px;
+            background: rgba(20, 20, 40, 0.8);
+            border-right: 1px solid rgba(100, 255, 218, 0.15);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .panel-header {
+            padding: 12px 16px;
+            background: rgba(0, 212, 255, 0.1);
+            border-bottom: 1px solid rgba(100, 255, 218, 0.1);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .panel-icon {
+            font-size: 16px;
+        }
+
+        .think-content {
+            flex: 1;
+            padding: 16px;
+            overflow-y: auto;
+            font-size: 13px;
+            line-height: 1.8;
+            color: rgba(255, 255, 255, 0.5);
+            font-style: italic;
+        }
+
+        .think-item {
+            margin-bottom: 12px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            border-left: 3px solid rgba(138, 43, 226, 0.5);
+        }
+
+        /* 输出面板 */
+        .output-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .output-status {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #4ade80;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.waiting {
+            background: #fbbf24;
+            animation: blink 0.5s infinite;
+        }
+
+        .status-dot.error {
+            background: #f87171;
+            animation: none;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        .output-content {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            font-size: 14px;
+            line-height: 1.8;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .output-item {
+            margin-bottom: 16px;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .output-item.highlight {
+            background: linear-gradient(90deg, rgba(255, 107, 107, 0.3), rgba(138, 43, 226, 0.3));
+            padding: 12px 16px;
+            border-radius: 8px;
+            animation: highlightPulse 2s infinite;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes highlightPulse {
+            0%, 100% { box-shadow: 0 0 20px rgba(255, 107, 107, 0.3); }
+            50% { box-shadow: 0 0 40px rgba(138, 43, 226, 0.5); }
+        }
+
+        /* 历史面板 */
+        .history-panel {
+            background: rgba(20, 20, 40, 0.9);
+            border-top: 1px solid rgba(100, 255, 218, 0.15);
+            max-height: 150px;
+            overflow: hidden;
+            transition: max-height 0.3s;
+        }
+
+        .history-panel.collapsed {
+            max-height: 40px;
+        }
+
+        .history-header {
+            padding: 10px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.6);
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        .history-toggle {
+            background: none;
+            border: none;
+            color: rgba(255, 255, 255, 0.6);
+            cursor: pointer;
+            transition: transform 0.3s;
+        }
+
+        .history-panel.collapsed .history-toggle {
+            transform: rotate(-90deg);
+        }
+
+        .history-content {
+            padding: 12px 16px;
+            max-height: 110px;
+            overflow-y: auto;
+            font-family: "Consolas", "Monaco", monospace;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        .history-item {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 6px;
+            padding: 4px 8px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 4px;
+        }
+
+        .history-x {
+            color: #00d4ff;
+            font-weight: 600;
+            min-width: 80px;
+        }
+
+        .history-y {
+            color: rgba(255, 255, 255, 0.7);
+            word-break: break-all;
+        }
+
+        /* 输入面板 */
+        .input-panel {
+            padding: 16px 20px;
+            background: rgba(20, 20, 40, 0.95);
+            border-top: 1px solid rgba(100, 255, 218, 0.2);
+            display: flex;
+            gap: 12px;
+        }
+
+        .input-panel input {
+            flex: 1;
+            padding: 12px 16px;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(100, 255, 218, 0.3);
+            border-radius: 8px;
+            color: white;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .input-panel input:focus {
+            border-color: rgba(0, 212, 255, 0.6);
+        }
+
+        .input-panel input::placeholder {
+            color: rgba(255, 255, 255, 0.3);
+        }
+
+        .send-btn {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #00d4ff, #8a2be2);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .send-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 212, 255, 0.4);
+        }
+
+        .send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* 配置弹窗 */
+        .config-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .config-modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #1a1a2e;
+            padding: 30px;
+            border-radius: 16px;
+            width: 400px;
+            border: 1px solid rgba(100, 255, 218, 0.2);
+        }
+
+        .modal-content h3 {
+            color: white;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .config-item {
+            margin-bottom: 16px;
+        }
+
+        .config-item label {
+            display: block;
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 13px;
+            margin-bottom: 6px;
+        }
+
+        .config-item input {
+            width: 100%;
+            padding: 10px 12px;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(100, 255, 218, 0.3);
+            border-radius: 6px;
+            color: white;
+            font-size: 14px;
+        }
+
+        .config-buttons {
+            display: flex;
+            gap: 12px;
+            margin-top: 24px;
+        }
+
+        .btn-save, .btn-cancel {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .btn-save {
+            background: linear-gradient(135deg, #00d4ff, #8a2be2);
+            color: white;
+        }
+
+        .btn-cancel {
+            background: rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        /* 滚动条 */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(100, 255, 218, 0.3);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(100, 255, 218, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <div class="shell-window">
+        <!-- 标题栏 -->
+        <div class="shell-titlebar">
+            <span class="shell-title">🧠 Deepseek V4 Pro God</span>
+            <div class="shell-controls">
+                <button class="shell-btn" id="btn-config" title="配置">⚙️</button>
+                <button class="shell-btn" id="btn-clear" title="清空">🗑️</button>
+                <button class="shell-btn" id="btn-export" title="导出">📤</button>
+                <button class="shell-btn" id="btn-close" title="关闭">❌</button>
+            </div>
+        </div>
+
+        <!-- 主容器 -->
+        <div class="shell-container">
+            <!-- 思考面板 -->
+            <div class="think-panel">
+                <div class="panel-header">
+                    <span class="panel-icon">🧠</span>
+                    <span>颅内思考</span>
+                </div>
+                <div class="think-content" id="think-content"></div>
+            </div>
+
+            <!-- 输出面板 -->
+            <div class="output-panel">
+                <div class="panel-header">
+                    <span class="panel-icon">📺</span>
+                    <span>屏幕输出</span>
+                    <div class="output-status">
+                        <span class="status-dot" id="status-dot"></span>
+                        <span class="status-text" id="status-text">就绪</span>
+                    </div>
+                </div>
+                <div class="output-content" id="output-content"></div>
+            </div>
+        </div>
+
+        <!-- 历史面板 -->
+        <div class="history-panel" id="history-panel">
+            <div class="history-header" id="history-header">
+                <span>📜 操作历史</span>
+                <button class="history-toggle">▼</button>
+            </div>
+            <div class="history-content" id="history-content"></div>
+        </div>
+
+        <!-- 输入面板 -->
+        <div class="input-panel">
+            <input type="text" id="user-input" placeholder="输入消息，按 Enter 发送..." autocomplete="off">
+            <button class="send-btn" id="send-btn">发送</button>
+        </div>
+    </div>
+
+    <!-- 配置弹窗 -->
+    <div class="config-modal" id="config-modal">
+        <div class="modal-content">
+            <h3>⚙️ API 配置</h3>
+            <div class="config-item">
+                <label>API Key</label>
+                <input type="password" id="api-key" placeholder="sk-...">
+            </div>
+            <div class="config-item">
+                <label>Base URL</label>
+                <input type="text" id="base-url" value="https://api.deepseek.com">
+            </div>
+            <div class="config-item">
+                <label>Model</label>
+                <input type="text" id="model-name" value="deepseek-chat">
+            </div>
+            <div class="config-buttons">
+                <button class="btn-save" id="btn-save-config">保存</button>
+                <button class="btn-cancel" id="btn-cancel-config">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ========== 状态管理 ==========
+        const state = {
+            thinkContent: [],
+            outputContent: [],
+            history: [],
+            isProcessing: false,
+            config: {
+                apiKey: '',
+                baseURL: 'https://api.deepseek.com',
+                model: 'deepseek-chat'
+            }
+        };
+
+        // ========== DOM元素 ==========
+        const elements = {
+            thinkContent: document.getElementById('think-content'),
+            outputContent: document.getElementById('output-content'),
+            historyContent: document.getElementById('history-content'),
+            userInput: document.getElementById('user-input'),
+            sendBtn: document.getElementById('send-btn'),
+            statusDot: document.getElementById('status-dot'),
+            statusText: document.getElementById('status-text'),
+            historyPanel: document.getElementById('history-panel'),
+            historyHeader: document.getElementById('history-header'),
+            configModal: document.getElementById('config-modal'),
+            apiKey: document.getElementById('api-key'),
+            baseURL: document.getElementById('base-url'),
+            modelName: document.getElementById('model-name')
+        };
+
+        // ========== 渲染函数 ==========
+        function renderThink() {
+            elements.thinkContent.innerHTML = state.thinkContent
+                .map(item => `<div class="think-item">${item}</div>`)
+                .join('');
+            elements.thinkContent.scrollTop = elements.thinkContent.scrollHeight;
+        }
+
+        function renderOutput() {
+            elements.outputContent.innerHTML = state.outputContent
+                .map(item => {
+                    if (item.type === 'highlight') {
+                        return `<div class="output-item highlight">${item.content}</div>`;
+                    }
+                    return `<div class="output-item">${item.content}</div>`;
+                })
+                .join('');
+            elements.outputContent.scrollTop = elements.outputContent.scrollHeight;
+        }
+
+        function renderHistory() {
+            elements.historyContent.innerHTML = state.history
+                .map(item => `
+                    <div class="history-item">
+                        <span class="history-x">[${item.x}]</span>
+                        <span class="history-y">${item.y}</span>
+                    </div>
+                `)
+                .join('');
+        }
+
+        function setStatus(status, text) {
+            elements.statusDot.className = 'status-dot ' + status;
+            elements.statusText.textContent = text;
+        }
+
+        // ========== XY动作处理 ==========
+        function processAction(x, y) {
+            // 记录历史
+            state.history.push({ x, y, time: Date.now() });
+            renderHistory();
+
+            // 根据X类型处理
+            switch (x) {
+                case 'THINK':
+                    state.thinkContent.push(y);
+                    renderThink();
+                    break;
+
+                case 'OUTPUT':
+                    state.outputContent.push({ type: 'normal', content: y });
+                    renderOutput();
+                    break;
+
+                case 'HIGHLIGHT':
+                    state.outputContent.push({ type: 'highlight', content: y });
+                    renderOutput();
+                    break;
+
+                case 'DELETE':
+                    // 删除最后N个字符
+                    if (state.outputContent.length > 0) {
+                        const last = state.outputContent[state.outputContent.length - 1];
+                        if (last.content.length > y) {
+                            last.content = last.content.slice(0, -y);
+                        } else {
+                            state.outputContent.pop();
+                        }
+                        renderOutput();
+                    }
+                    break;
+
+                case 'MODIFY':
+                    // y格式: "位置|新内容"
+                    const [pos, newContent] = y.split('|');
+                    const index = parseInt(pos);
+                    if (index >= 0 && index < state.outputContent.length) {
+                        state.outputContent[index].content = newContent;
+                        renderOutput();
+                    }
+                    break;
+
+                case 'NEWLINE':
+                    state.outputContent.push({ type: 'normal', content: '\n' });
+                    renderOutput();
+                    break;
+
+                case 'CLEAR':
+                    state.outputContent = [];
+                    state.thinkContent = [];
+                    renderOutput();
+                    renderThink();
+                    break;
+
+                case 'PAUSE':
+                    setStatus('waiting', '等待确认...');
+                    break;
+
+                case 'ABORT':
+                    setStatus('error', '已中断');
+                    break;
+
+                default:
+                    console.log(`Unknown action: ${x}`, y);
+            }
+        }
+
+        // ========== API调用 ==========
+        async function sendToDeepSeek(message) {
+            setStatus('waiting', '思考中...');
+
+            try {
+                const response = await fetch(`${state.config.baseURL}/chat/completions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${state.config.apiKey}`
+                    },
+                    body: JSON.stringify({
+                        model: state.config.model,
+                        messages: [
+                            {
+                                role: 'system',
+                                content: `你是一个XY动作生成器。你的输出必须是严格的JSON格式，包含一个actions数组。
+每个动作格式: {"x": "动作类型", "y": "内容"}
+
+可用动作类型:
+- THINK: 颅内思考，内容不直接显示
+- OUTPUT: 输出到屏幕
+- HIGHLIGHT: 高亮输出
+- DELETE: 删除最后N个字符
+- MODIFY: 修改，格式 "位置|新内容"
+- NEWLINE: 换行
+- CLEAR: 清空所有内容
+- PAUSE: 暂停等待确认
+- ABORT: 中断输出
+
+示例输出:
+{"actions": [
+  {"x": "THINK", "y": "用户在问天气，我需要先思考一下"},
+  {"x": "OUTPUT", "y": "今天天气"},
+  {"x": "THINK", "y": "需要告诉他具体温度"},
+  {"x": "HIGHLIGHT", "y": "25°C"},
+  {"x": "OUTPUT", "y": "，适合出行"}
+]}`
+                            },
+                            {
+                                role: 'user',
+                                content: message
+                            }
+                        ],
+                        temperature: 0.7
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API错误: ${response.status}`);
+                }
+
+                const data = await response.json();
+                const content = data.choices[0].message.content;
+
+                // 解析JSON响应
+                let parsed;
+                try {
+                    // 尝试提取JSON
+                    const jsonMatch = content.match(/\{[\s\S]*\}/);
+                    if (jsonMatch) {
+                        parsed = JSON.parse(jsonMatch[0]);
+                    } else {
+                        throw new Error('无法解析JSON');
+                    }
+                } catch (e) {
+                    // 如果解析失败，直接作为OUTPUT
+                    state.outputContent.push({ type: 'normal', content: content });
+                    renderOutput();
+                    setStatus('', '就绪');
+                    return;
+                }
+
+                // 执行动作序列
+                if (parsed.actions) {
+                    for (const action of parsed.actions) {
+                        processAction(action.x, action.y);
+                        await new Promise(r => setTimeout(r, 200)); // 模拟打字效果
+                    }
+                }
+
+                setStatus('', '就绪');
+            } catch (error) {
+                console.error('API调用失败:', error);
+                setStatus('error', '错误: ' + error.message);
+            }
+        }
+
+        // ========== 事件处理 ==========
+        elements.sendBtn.addEventListener('click', handleSend);
+        elements.userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') handleSend();
+        });
+
+        async function handleSend() {
+            const message = elements.userInput.value.trim();
+            if (!message || state.isProcessing) return;
+
+            state.isProcessing = true;
+            elements.sendBtn.disabled = true;
+            elements.userInput.value = '';
+
+            // 显示用户消息
+            state.outputContent.push({ type: 'normal', content: `[你] ${message}` });
+            renderOutput();
+
+            await sendToDeepSeek(message);
+
+            state.isProcessing = false;
+            elements.sendBtn.disabled = false;
+        }
+
+        // 清空
+        document.getElementById('btn-clear').addEventListener('click', () => {
+            processAction('CLEAR', '');
+        });
+
+        // 导出
+        document.getElementById('btn-export').addEventListener('click', () => {
+            const exportData = {
+                think: state.thinkContent,
+                output: state.outputContent,
+                history: state.history
+            };
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `deepseek-output-${Date.now()}.json`;
+            a.click();
+        });
+
+        // 历史面板折叠
+        elements.historyHeader.addEventListener('click', () => {
+            elements.historyPanel.classList.toggle('collapsed');
+        });
+
+        // 配置弹窗
+        document.getElementById('btn-config').addEventListener('click', () => {
+            elements.apiKey.value = state.config.apiKey;
+            elements.baseURL.value = state.config.baseURL;
+            elements.modelName.value = state.config.model;
+            elements.configModal.classList.add('active');
+        });
+
+        document.getElementById('btn-save-config').addEventListener('click', () => {
+            state.config.apiKey = elements.apiKey.value;
+            state.config.baseURL = elements.baseURL.value;
+            state.config.model = elements.modelName.value;
+            localStorage.setItem('deepseek-config', JSON.stringify(state.config));
+            elements.configModal.classList.remove('active');
+        });
+
+        document.getElementById('btn-cancel-config').addEventListener('click', () => {
+            elements.configModal.classList.remove('active');
+        });
+
+        // 加载保存的配置
+        const savedConfig = localStorage.getItem('deepseek-config');
+        if (savedConfig) {
+            state.config = JSON.parse(savedConfig);
+        }
+
+        // 初始状态
+        setStatus('', '就绪');
+    </script>
+</body>
+</html>

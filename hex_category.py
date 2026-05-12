@@ -230,6 +230,146 @@ class HexCategorySystem:
         self.category_morphisms[user_input] = program_output
         self._save_data()
     
+    def auto_learn(self, user_input: str, program_output: str = None):
+        """
+        自主学习核心方法
+        
+        每次对话自动调用：
+        1. 学习用户输入
+        2. 如果有程序输出，学习输出
+        3. 分析输入结构，推断映射关系
+        4. 如果没有显式输出，自动推断可能的回复
+        """
+        # 1. 学习用户输入
+        self.learn_from_user_input(user_input)
+        
+        # 2. 如果有输出，学习输出
+        if program_output:
+            self.learn_from_program_output(program_output)
+            # 立即建立映射
+            self.add_morphism(user_input, program_output)
+            return program_output
+        
+        # 3. 分析输入结构，推断映射
+        inferred = self._analyze_and_infer_mapping(user_input)
+        
+        return inferred
+    
+    def _analyze_and_infer_mapping(self, user_input: str) -> str:
+        """
+        分析输入结构，推断映射关系
+        
+        范畴论视角：
+        - 识别输入的句式类型
+        - 如果有输出，建立输入类型→输出类型的映射
+        - 如果没有输出，尝试从历史中推断
+        """
+        length = len(user_input)
+        
+        # 如果已经有映射，直接返回
+        if user_input in self.category_morphisms:
+            return self.category_morphisms[user_input]
+        
+        # 检查是否有相同长度的已知句式
+        if length not in self.user_inputs:
+            return None
+        
+        known_sentences = list(self.user_inputs[length])
+        
+        # 分析与已知句式的相似度
+        for known in known_sentences:
+            if known == user_input:
+                continue
+                
+            similarity = self._calculate_text_similarity(user_input, known)
+            
+            # 如果相似度高，自动推断映射
+            if similarity > 0.4:
+                # 检查已知句式是否有映射
+                if known in self.category_morphisms:
+                    known_output = self.category_morphisms[known]
+                    
+                    # 尝试保持相同的句式关系
+                    inferred_output = self._transfer_pattern(known, known_output, user_input)
+                    if inferred_output:
+                        self.add_morphism(user_input, inferred_output)
+                        print(f"  🔗 自动推断映射: '{user_input}' → '{inferred_output}'")
+                        return inferred_output
+        
+        return None
+    
+    def _transfer_pattern(self, source_input: str, source_output: str, target_input: str) -> str:
+        """
+        模式迁移：将已知输入-输出的关系迁移到新输入
+        
+        范畴论中的函子：保持结构的映射
+        """
+        if not source_input or not source_output:
+            return None
+        
+        # 找公共前缀和后缀
+        prefix_len = 0
+        while prefix_len < len(source_input) and prefix_len < len(target_input):
+            if source_input[prefix_len] == target_input[prefix_len]:
+                prefix_len += 1
+            else:
+                break
+        
+        # 找公共后缀
+        suffix_len = 0
+        while (suffix_len < len(source_input) - prefix_len and 
+               suffix_len < len(target_input) - prefix_len):
+            if source_input[-(suffix_len + 1)] == target_input[-(suffix_len + 1)]:
+                suffix_len += 1
+            else:
+                break
+        
+        # 如果有足够的公共部分，尝试迁移
+        if prefix_len + suffix_len >= min(len(source_input), len(target_input)) * 0.5:
+            # 替换中间部分
+            prefix = target_input[:prefix_len]
+            suffix = target_input[-suffix_len:] if suffix_len > 0 else ''
+            middle = source_output[len(source_input):len(source_output)-suffix_len] if suffix_len < len(source_output) else ''
+            
+            # 调整长度以匹配
+            if len(prefix) + len(middle) + len(suffix) == len(target_input):
+                return prefix + middle + suffix
+        
+        # 回退：返回与target等长的source_output片段
+        if len(source_output) >= len(target_input):
+            return source_output[:len(target_input)]
+        
+        return None
+    
+    def _infer_response(self, user_input: str) -> str:
+        """
+        推断回复（当没有显式输出时）
+        
+        策略：
+        1. 查找相似的已知输入
+        2. 如果有映射，尝试迁移模式
+        3. 否则返回输入（复读）
+        """
+        # 查找最相似的已知输入
+        best_similarity = 0
+        best_match = None
+        
+        for known in self.user_inputs[len(user_input)]:
+            sim = self._calculate_text_similarity(user_input, known)
+            if sim > best_similarity and sim >= 0.3:
+                best_similarity = sim
+                best_match = known
+        
+        if best_match and best_match in self.category_morphisms:
+            # 尝试迁移模式
+            source_output = self.category_morphisms[best_match]
+            inferred = self._transfer_pattern(best_match, source_output, user_input)
+            if inferred:
+                print(f"  🤔 推断回复: '{user_input}' → '{inferred}'")
+                return inferred
+        
+        return None
+    
     def _extract_patterns(self, length: int, is_user: bool):
         """从指定长度的句子中提取句式模板"""
         source = self.user_inputs if is_user else self.program_outputs
