@@ -46,7 +46,7 @@ class DeepseekV4ProGod:
         self.session_id = None
         
         # 系统提示词 - 定义XY动作协议
-        self.system_prompt = """你是一个XY动作生成器，输出严格JSON格式的动作序列。
+        self.system_prompt = r"""你是一个XY动作生成器，输出严格JSON格式的动作序列。
 
 ## XY动作协议
 每个动作是一个(X, Y)二元组：
